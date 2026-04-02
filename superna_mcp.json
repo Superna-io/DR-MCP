@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "eyeglass-failover": {
+      "url": "http://127.0.0.1:8000/sse"
+    }
+  },
+  "eyeglass_host": "igls",
+  "eyeglass_api_token": "igls-your-token-here",
+  "eyeglass_verify_ssl": false,
+  "mcp_port": 8000,
+  "server_py_path": "server.py",
+  "openai_api_key": "",
+  "anthropic_api_key": ""
+}

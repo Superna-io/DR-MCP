@@ -35,7 +35,6 @@ jobs:
             --name SupernaMCP-GUI `
             --add-data "superna_mcp.json;." `
             --add-data "server.py;." `
-            --add-data "supernaIO-high-res.png;." `
             --add-data "logo.png;." `
             --hidden-import customtkinter `
             --hidden-import PIL `

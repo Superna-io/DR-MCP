@@ -223,7 +223,7 @@ class SupernaMCPApp(ctk.CTk):
         self.mcp_tools = []
         self._loop = None
 
-        self.title("Superna Eyeglass MCP Console")
+        self.title("Superna DR MCP Server and Agentic AI Console")
         self.geometry("1180x820")
         self.minsize(900, 650)
         self.configure(fg_color=DARK_BG)
@@ -236,13 +236,18 @@ class SupernaMCPApp(ctk.CTk):
     # ── UI Construction ───────────────────────────────────────────────────────
 
     def _set_window_icon(self):
-        """Set the window/taskbar icon from logo.png."""
+        """Set the window/taskbar icon from logo.png via a temp .ico file (Windows compatible)."""
         try:
             icon_path = _bundle_dir() / "logo.png"
-            if icon_path.exists():
-                icon = ImageTk.PhotoImage(Image.open(icon_path))
-                self.wm_iconphoto(True, icon)
-                self._icon_ref = icon  # prevent garbage collection
+            if not icon_path.exists():
+                return
+            img = Image.open(icon_path).resize((32, 32), Image.LANCZOS)
+            import tempfile, os
+            tmp = tempfile.NamedTemporaryFile(suffix=".ico", delete=False)
+            tmp.close()
+            img.save(tmp.name, format="ICO", sizes=[(32, 32), (16, 16)])
+            self._ico_path = tmp.name  # keep reference
+            self.after(100, lambda: self.iconbitmap(self._ico_path))
         except Exception:
             pass
 
@@ -252,24 +257,14 @@ class SupernaMCPApp(ctk.CTk):
         topbar.pack(fill="x", side="top")
         topbar.pack_propagate(False)
 
-        # Header: logo icon + Superna wordmark
-        icon_img = _load_image("logo.png", (32, 32))
+        # Header: logo icon + title text
+        icon_img = _load_image("logo.png", (36, 36))
         if icon_img:
-            ctk.CTkLabel(topbar, image=icon_img, text="").pack(side="left", padx=(16, 6), pady=4)
-
-        # Scale wordmark proportionally: source is 75x19, show at 3x → 225x57
-        wordmark = _load_image("supernaIO-high-res.png", (225, 57))
-        if wordmark:
-            ctk.CTkLabel(topbar, image=wordmark, text="").pack(side="left", padx=(0, 8), pady=4)
-        else:
-            ctk.CTkLabel(
-                topbar, text="SUPERNA EYEGLASS",
-                font=("Consolas", 13, "bold"), text_color=ACCENT
-            ).pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(topbar, image=icon_img, text="").pack(side="left", padx=(14, 8), pady=6)
 
         ctk.CTkLabel(
-            topbar, text="MCP CONSOLE",
-            font=("Consolas", 11), text_color=TEXT_MUTED
+            topbar, text="Superna DR MCP Server and Agentic AI Console",
+            font=("Segoe UI Semibold", 13), text_color=TEXT_PRIMARY
         ).pack(side="left", padx=(0, 20))
 
         self.status_dot = ctk.CTkLabel(topbar, text="●", font=("Segoe UI", 16), text_color=ERROR)

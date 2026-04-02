@@ -34,6 +34,7 @@ jobs:
             --windowed `
             --name SupernaMCP-GUI `
             --add-data "superna_mcp.json;." `
+            --add-data "server.py;." `
             --hidden-import customtkinter `
             --hidden-import openai `
             --hidden-import anthropic `

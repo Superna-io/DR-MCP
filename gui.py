@@ -7,12 +7,35 @@ import os
 import sys
 import json
 import time
+import shutil
 import threading
 import subprocess
 import asyncio
 import textwrap
 from pathlib import Path
 from datetime import datetime
+
+# ─── Frozen / PyInstaller helpers ─────────────────────────────────────────────
+
+def _is_frozen() -> bool:
+    return getattr(sys, 'frozen', False)
+
+def _bundle_dir() -> Path:
+    """Directory where PyInstaller extracts bundled data files."""
+    if _is_frozen():
+        return Path(sys._MEIPASS)
+    return Path(__file__).parent
+
+def _find_python() -> str | None:
+    """Return a usable Python executable path."""
+    if not _is_frozen():
+        return sys.executable
+    # When frozen sys.executable is the .exe — find real Python in PATH
+    for name in ("python", "python3", "py"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
 
 import customtkinter as ctk
 import requests
@@ -39,7 +62,14 @@ except ImportError:
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-CONFIG_FILE = Path(__file__).parent / "superna_mcp.json"
+# When frozen the exe lives at sys.executable; save config next to it so it persists.
+# When running as a script, save alongside the script as before.
+def _config_file() -> Path:
+    if _is_frozen():
+        return Path(sys.executable).parent / "superna_mcp.json"
+    return Path(__file__).parent / "superna_mcp.json"
+
+CONFIG_FILE = _config_file()
 
 DEFAULT_CONFIG = {
     "mcpServers": {
@@ -455,6 +485,12 @@ class SupernaMCPApp(ctk.CTk):
 
     def _start_server(self):
         server_path = self.server_path_var.get().strip()
+
+        # When frozen and no path set, use the bundled server.py
+        if not server_path and _is_frozen():
+            server_path = str(_bundle_dir() / "server.py")
+            self.server_path_var.set(server_path)
+
         if not server_path:
             self._append_chat("error_text", "✗ No server.py path set.\n")
             return
@@ -464,12 +500,17 @@ class SupernaMCPApp(ctk.CTk):
             self._append_chat("error_text", f"✗ server.py not found at: {server_path}\n")
             return
 
+        python_exe = _find_python()
+        if not python_exe:
+            self._append_chat("error_text", "✗ Python not found in PATH. Please install Python and ensure it is on your PATH.\n")
+            return
+
         port = int(self.port_var.get() or 8000)
         self._append_chat("muted", f"⟳ Starting MCP server on port {port}...\n")
 
         try:
             self.server_process = subprocess.Popen(
-                [sys.executable, str(server_path), "--sse", "--port", str(port)],
+                [python_exe, str(server_path), "--sse", "--port", str(port)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=str(server_path.parent)
             )

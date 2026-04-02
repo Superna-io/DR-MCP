@@ -342,14 +342,14 @@ class SupernaMCPApp(ctk.CTk):
         self.chat_box.pack(fill="both", expand=True, padx=0, pady=0)
 
         # Configure text tags
-        self.chat_box.tag_config("user_label",   foreground=ACCENT2,  font=("Consolas", 11, "bold"))
-        self.chat_box.tag_config("ai_label",     foreground=ACCENT,   font=("Consolas", 11, "bold"))
-        self.chat_box.tag_config("tool_label",   foreground=WARNING,  font=("Consolas", 11, "bold"))
-        self.chat_box.tag_config("error_label",  foreground=ERROR,    font=("Consolas", 11, "bold"))
+        self.chat_box.tag_config("user_label",   foreground=ACCENT2)
+        self.chat_box.tag_config("ai_label",     foreground=ACCENT)
+        self.chat_box.tag_config("tool_label",   foreground=WARNING)
+        self.chat_box.tag_config("error_label",  foreground=ERROR)
         self.chat_box.tag_config("user_text",    foreground=TEXT_PRIMARY)
         self.chat_box.tag_config("ai_text",      foreground=TEXT_PRIMARY)
-        self.chat_box.tag_config("tool_text",    foreground=TEXT_MUTED, font=("Consolas", 11))
-        self.chat_box.tag_config("muted",        foreground=TEXT_MUTED, font=("Consolas", 10))
+        self.chat_box.tag_config("tool_text",    foreground=TEXT_MUTED)
+        self.chat_box.tag_config("muted",        foreground=TEXT_MUTED)
         self.chat_box.tag_config("error_text",   foreground=ERROR)
 
         # Input area

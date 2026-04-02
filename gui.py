@@ -308,9 +308,20 @@ class SupernaMCPApp(ctk.CTk):
                      fg_color=DARK_BG, border_color=BORDER, text_color=TEXT_PRIMARY,
                      font=FONT_UI).pack(anchor="w", **pad)
 
+        # Install Dependencies button
+        btn_row_dep = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_row_dep.pack(fill="x", padx=14, pady=(10, 2))
+        self.install_btn = ctk.CTkButton(
+            btn_row_dep, text="⬇  Install Dependencies",
+            fg_color=BORDER, hover_color=ACCENT,
+            text_color=TEXT_PRIMARY, font=("Segoe UI Semibold", 12),
+            command=self._install_dependencies
+        )
+        self.install_btn.pack(fill="x")
+
         # Start / Stop button
         btn_row = ctk.CTkFrame(parent, fg_color="transparent")
-        btn_row.pack(fill="x", padx=14, pady=(10, 4))
+        btn_row.pack(fill="x", padx=14, pady=(4, 4))
         self.start_btn = ctk.CTkButton(
             btn_row, text="▶  Start Server", fg_color=SUCCESS, hover_color="#2ea043",
             text_color=DARK_BG, font=("Segoe UI Semibold", 12),
@@ -498,6 +509,37 @@ class SupernaMCPApp(ctk.CTk):
         else:
             self._save_config()
             self._start_server()
+
+    def _install_dependencies(self):
+        python_exe = _find_python()
+        if not python_exe:
+            self._append_chat("error_text", "✗ Python not found in PATH.\n")
+            return
+        self.install_btn.configure(state="disabled", text="⬇  Installing...")
+        self._append_chat("muted", "⟳ Installing Python dependencies...\n")
+        threading.Thread(target=self._run_pip_install, args=(python_exe,), daemon=True).start()
+
+    def _run_pip_install(self, python_exe: str):
+        packages = ["mcp", "requests", "cryptography", "urllib3"]
+        try:
+            proc = subprocess.Popen(
+                [python_exe, "-m", "pip", "install"] + packages,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True
+            )
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    self.after(0, lambda l=line: self._append_chat("tool_text", f"  {l}\n"))
+            proc.wait()
+            if proc.returncode == 0:
+                self.after(0, lambda: self._append_chat("ai_text", "✓ Dependencies installed successfully.\n"))
+            else:
+                self.after(0, lambda: self._append_chat("error_text", "✗ pip install failed — see output above.\n"))
+        except Exception as e:
+            self.after(0, lambda: self._append_chat("error_text", f"✗ Install error: {e}\n"))
+        finally:
+            self.after(0, lambda: self.install_btn.configure(state="normal", text="⬇  Install Dependencies"))
 
     def _start_server(self):
         server_path = self.server_path_var.get().strip()

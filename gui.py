@@ -37,6 +37,22 @@ def _find_python() -> str | None:
             return found
     return None
 
+
+def _extract_bundled_files():
+    """
+    When running as a frozen exe, copy server.py and superna_mcp.json
+    from the PyInstaller temp bundle to the same folder as the exe.
+    Skips any file that already exists so user edits are preserved.
+    """
+    if not _is_frozen():
+        return
+    exe_dir = Path(sys.executable).parent
+    for filename in ("server.py", "superna_mcp.json"):
+        src = _bundle_dir() / filename
+        dst = exe_dir / filename
+        if src.exists() and not dst.exists():
+            shutil.copy2(src, dst)
+
 import customtkinter as ctk
 import requests
 
@@ -81,7 +97,7 @@ DEFAULT_CONFIG = {
     "eyeglass_api_token": "",
     "eyeglass_verify_ssl": False,
     "mcp_port": 8000,
-    "server_py_path": "server.py",
+    "server_py_path": str(Path(sys.executable).parent / "server.py") if _is_frozen() else "server.py",
     "openai_api_key": "",
     "anthropic_api_key": ""
 }
@@ -775,5 +791,6 @@ class SupernaMCPApp(ctk.CTk):
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _extract_bundled_files()
     app = SupernaMCPApp()
     app.mainloop()

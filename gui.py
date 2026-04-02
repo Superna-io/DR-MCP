@@ -54,7 +54,19 @@ def _extract_bundled_files():
             shutil.copy2(src, dst)
 
 import customtkinter as ctk
+from PIL import Image, ImageTk
 import requests
+
+def _load_image(filename: str, size: tuple) -> ctk.CTkImage | None:
+    """Load an image from the bundle directory, return CTkImage or None."""
+    path = _bundle_dir() / filename
+    if not path.exists():
+        return None
+    try:
+        img = Image.open(path)
+        return ctk.CTkImage(light_image=img, dark_image=img, size=size)
+    except Exception:
+        return None
 
 # ─── Optional LLM SDKs (imported lazily to give clear error messages) ─────────
 try:
@@ -217,10 +229,22 @@ class SupernaMCPApp(ctk.CTk):
         self.configure(fg_color=DARK_BG)
 
         self._build_ui()
+        self._set_window_icon()
         self._load_config_into_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── UI Construction ───────────────────────────────────────────────────────
+
+    def _set_window_icon(self):
+        """Set the window/taskbar icon from logo.png."""
+        try:
+            icon_path = _bundle_dir() / "logo.png"
+            if icon_path.exists():
+                icon = ImageTk.PhotoImage(Image.open(icon_path))
+                self.wm_iconphoto(True, icon)
+                self._icon_ref = icon  # prevent garbage collection
+        except Exception:
+            pass
 
     def _build_ui(self):
         # ── Top bar ──
@@ -228,11 +252,20 @@ class SupernaMCPApp(ctk.CTk):
         topbar.pack(fill="x", side="top")
         topbar.pack_propagate(False)
 
-        logo_lbl = ctk.CTkLabel(
-            topbar, text="⬡  SUPERNA EYEGLASS  ·  MCP CONSOLE",
-            font=("Consolas", 13, "bold"), text_color=ACCENT
-        )
-        logo_lbl.pack(side="left", padx=20)
+        # Superna wordmark in header
+        wordmark = _load_image("supernaIO-high-res.png", (120, 24))
+        if wordmark:
+            ctk.CTkLabel(topbar, image=wordmark, text="").pack(side="left", padx=16, pady=4)
+        else:
+            ctk.CTkLabel(
+                topbar, text="⬡  SUPERNA EYEGLASS  ·  MCP CONSOLE",
+                font=("Consolas", 13, "bold"), text_color=ACCENT
+            ).pack(side="left", padx=20)
+
+        ctk.CTkLabel(
+            topbar, text="MCP CONSOLE",
+            font=("Consolas", 11), text_color=TEXT_MUTED
+        ).pack(side="left", padx=(4, 20))
 
         self.status_dot = ctk.CTkLabel(topbar, text="●", font=("Segoe UI", 16), text_color=ERROR)
         self.status_dot.pack(side="right", padx=(0, 8))

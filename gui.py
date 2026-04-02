@@ -540,6 +540,21 @@ class SupernaMCPApp(ctk.CTk):
         sse_url = f"http://127.0.0.1:{port}/sse"
         for _ in range(30):
             time.sleep(0.5)
+            # Check if process already died — capture and show stderr
+            if self.server_process and self.server_process.poll() is not None:
+                stderr = ""
+                try:
+                    stderr = self.server_process.stderr.read().decode(errors="replace").strip()
+                except Exception:
+                    pass
+                msg = f"✗ Server process exited unexpectedly.\n"
+                if stderr:
+                    msg += f"  Error: {stderr}\n"
+                else:
+                    msg += "  Check that all Python packages are installed:\n"
+                    msg += "  pip install mcp requests cryptography urllib3\n"
+                self.after(0, lambda m=msg: self._append_chat("error_text", m))
+                return
             try:
                 r = requests.get(f"http://127.0.0.1:{port}/sse", timeout=1, stream=True)
                 r.close()

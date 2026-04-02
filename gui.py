@@ -252,20 +252,25 @@ class SupernaMCPApp(ctk.CTk):
         topbar.pack(fill="x", side="top")
         topbar.pack_propagate(False)
 
-        # Superna wordmark in header
-        wordmark = _load_image("supernaIO-high-res.png", (120, 24))
+        # Header: logo icon + Superna wordmark
+        icon_img = _load_image("logo.png", (32, 32))
+        if icon_img:
+            ctk.CTkLabel(topbar, image=icon_img, text="").pack(side="left", padx=(16, 6), pady=4)
+
+        # Scale wordmark proportionally: source is 75x19, show at 3x → 225x57
+        wordmark = _load_image("supernaIO-high-res.png", (225, 57))
         if wordmark:
-            ctk.CTkLabel(topbar, image=wordmark, text="").pack(side="left", padx=16, pady=4)
+            ctk.CTkLabel(topbar, image=wordmark, text="").pack(side="left", padx=(0, 8), pady=4)
         else:
             ctk.CTkLabel(
-                topbar, text="⬡  SUPERNA EYEGLASS  ·  MCP CONSOLE",
+                topbar, text="SUPERNA EYEGLASS",
                 font=("Consolas", 13, "bold"), text_color=ACCENT
-            ).pack(side="left", padx=20)
+            ).pack(side="left", padx=(0, 8))
 
         ctk.CTkLabel(
             topbar, text="MCP CONSOLE",
             font=("Consolas", 11), text_color=TEXT_MUTED
-        ).pack(side="left", padx=(4, 20))
+        ).pack(side="left", padx=(0, 20))
 
         self.status_dot = ctk.CTkLabel(topbar, text="●", font=("Segoe UI", 16), text_color=ERROR)
         self.status_dot.pack(side="right", padx=(0, 8))

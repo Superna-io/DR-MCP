@@ -12,6 +12,8 @@ Config: reads from superna_mcp.json in the same directory as this file,
 
 import os
 import json
+import logging
+import traceback
 import urllib3
 import requests
 from pathlib import Path
@@ -19,6 +21,25 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+
+def _setup_logging() -> logging.Logger:
+    log_path = Path(__file__).parent / "superna_mcp.log"
+    logger = logging.getLogger("superna_mcp")
+    logger.setLevel(logging.DEBUG)
+    if not logger.handlers:
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fmt = logging.Formatter(
+            "%(asctime)s  %(levelname)-8s  %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    return logger
+
+log = _setup_logging()
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -29,8 +50,8 @@ def _load_config() -> dict:
         try:
             with open(config_path, "r") as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Failed to load config %s: %s", config_path, exc)
     return {}
 
 _cfg = _load_config()
@@ -52,32 +73,65 @@ def _headers() -> dict:
     return {"api_key": EYEGLASS_API_TOKEN, "Content-Type": "application/json"}
 
 
+def _log_response(method: str, url: str, params, resp) -> None:
+    log.info("%-6s %s  params=%s  → HTTP %s", method, url, params, resp.status_code)
+    try:
+        log.debug("       response body: %s", resp.text[:2000])
+    except Exception:
+        pass
+
+
+def _log_error(method: str, url: str, params, exc: Exception) -> None:
+    log.error("%-6s %s  params=%s  → %s: %s", method, url, params, type(exc).__name__, exc)
+    log.debug(traceback.format_exc())
+
+
 def _get(path: str, params: dict = None) -> dict | list:
     url = f"{BASE_URL}{path}"
-    resp = requests.get(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = requests.get(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
+        _log_response("GET", url, params, resp)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        _log_error("GET", url, params, exc)
+        raise
 
 
 def _post(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
-    resp = requests.post(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = requests.post(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
+        _log_response("POST", url, params, resp)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        _log_error("POST", url, params, exc)
+        raise
 
 
 def _delete(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
-    resp = requests.delete(url, headers=_headers(), params=params, json={}, verify=EYEGLASS_VERIFY_SSL)
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = requests.delete(url, headers=_headers(), params=params, json={}, verify=EYEGLASS_VERIFY_SSL)
+        _log_response("DELETE", url, params, resp)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        _log_error("DELETE", url, params, exc)
+        raise
 
 
 def _put(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
-    resp = requests.put(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = requests.put(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
+        _log_response("PUT", url, params, resp)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        _log_error("PUT", url, params, exc)
+        raise
 
 
 def _clean(d: dict) -> dict:
@@ -683,15 +737,43 @@ def update_node_configrep_job(
 
 if __name__ == "__main__":
     import sys
+    import asyncio
+
     transport = "stdio" if "--stdio" in sys.argv else "sse"
     # CLI --port overrides JSON config
     if "--port" in sys.argv:
         port = int(sys.argv[sys.argv.index("--port") + 1])
     else:
         port = MCP_PORT
-    if transport == "sse":
-        mcp.settings.host = "127.0.0.1"
-        mcp.settings.port = port
-        mcp.run(transport="sse")
-    else:
-        mcp.run(transport="stdio")
+
+    log.info("=" * 60)
+    log.info("Superna MCP Server starting  transport=%s  host=%s  port=%s",
+             transport, "127.0.0.1" if transport == "sse" else "n/a",
+             port if transport == "sse" else "n/a")
+    log.info("Eyeglass host: %s  verify_ssl=%s", EYEGLASS_HOST, EYEGLASS_VERIFY_SSL)
+    log.info("Log file: %s", Path(__file__).parent / "superna_mcp.log")
+
+    def _asyncio_exception_handler(loop, context):
+        exc = context.get("exception")
+        msg = context.get("message", "")
+        if exc:
+            log.error("asyncio unhandled exception: %s: %s\n%s",
+                      type(exc).__name__, exc,
+                      "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        else:
+            log.error("asyncio unhandled error: %s  context=%s", msg, context)
+
+    loop = asyncio.new_event_loop()
+    loop.set_exception_handler(_asyncio_exception_handler)
+    asyncio.set_event_loop(loop)
+
+    try:
+        if transport == "sse":
+            mcp.settings.host = "127.0.0.1"
+            mcp.settings.port = port
+            mcp.run(transport="sse")
+        else:
+            mcp.run(transport="stdio")
+    except Exception as exc:
+        log.critical("Server crashed: %s\n%s", exc, traceback.format_exc())
+        raise

@@ -28,7 +28,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.1.7"
+BUILD = "1.1.8"
 
 
 # ─── Synchronous trace ────────────────────────────────────────────────────────
@@ -116,6 +116,15 @@ def _setup_logging() -> logging.Logger:
     # Our own logger
     logger = logging.getLogger("superna_mcp")
     logger.setLevel(logging.DEBUG)
+    # CRITICAL: disable propagation to the root logger.
+    # uvicorn/starlette configure the root logger with a direct StreamHandler
+    # (writing to stdout/stderr) during server startup.  With propagate=True
+    # (the default), every log.info() / log.debug() call in a tool worker
+    # thread ALSO writes synchronously to that StreamHandler — which blocks
+    # when the stdout pipe to the GUI is full.  This is what caused tool
+    # threads to hang on the 3rd call: the QueueHandler was non-blocking but
+    # the propagated root-logger write was not.
+    logger.propagate = False
     if not logger.handlers:
         logger.addHandler(queue_handler)
 
@@ -125,6 +134,7 @@ def _setup_logging() -> logging.Logger:
     for lib_name in ("mcp", "uvicorn", "uvicorn.error", "fastapi", "starlette"):
         lib_log = logging.getLogger(lib_name)
         lib_log.setLevel(logging.WARNING)
+        lib_log.propagate = False
         if not any(isinstance(h, logging.handlers.QueueHandler) for h in lib_log.handlers):
             lib_log.addHandler(queue_handler)
 

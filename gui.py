@@ -58,7 +58,7 @@ def _extract_bundled_files():
         if filename == "server.py" or not dst.exists():
             shutil.copy2(src, dst)
 
-BUILD = "1.0.7"
+BUILD = "1.0.8"
 
 
 def _gui_log_path() -> Path:
@@ -708,19 +708,33 @@ class SupernaMCPApp(ctk.CTk):
         self._append_chat("muted", "■ Server stopped\n")
 
     def _load_tools(self, sse_url: str):
+        import traceback as _tb
+        gui_log.info("GUI  _load_tools starting  url=%s", sse_url)
         try:
             loop = asyncio.new_event_loop()
-            tools = loop.run_until_complete(get_mcp_tools(sse_url))
+            # 20-second timeout — prevents permanent hang if SSE response never arrives
+            tools = loop.run_until_complete(
+                asyncio.wait_for(get_mcp_tools(sse_url), timeout=20.0)
+            )
             loop.close()
             self.mcp_tools = tools
-            self.after(0, lambda: self.tools_lbl.configure(
-                text=f"✓ {len(tools)} tools loaded", text_color=SUCCESS
+            names = [t.name for t in tools]
+            gui_log.info("GUI  _load_tools OK  count=%d  tools=%s", len(tools), names)
+            if len(tools) == 0:
+                gui_log.warning("GUI  _load_tools returned 0 tools — check server registration")
+            self.after(0, lambda n=len(tools): self.tools_lbl.configure(
+                text=f"✓ {n} tools loaded", text_color=SUCCESS if n > 0 else WARNING
             ))
-            self.after(0, lambda: self._append_chat(
-                "muted", f"✓ {len(tools)} MCP tools available\n\n"
+            self.after(0, lambda n=len(tools): self._append_chat(
+                "muted" if n > 0 else "error_text",
+                f"✓ {n} MCP tools available\n\n" if n > 0
+                else "✗ 0 tools returned — server may not have registered tools correctly.\n\n"
             ))
         except Exception as e:
-            self.after(0, lambda: self._append_chat("error_text", f"✗ Tool load error: {e}\n"))
+            gui_log.error("GUI  _load_tools FAILED  %s: %s\n%s",
+                          type(e).__name__, e, _tb.format_exc())
+            self.after(0, lambda err=f"{type(e).__name__}: {e}":
+                       self._append_chat("error_text", f"✗ Tool load error: {err}\n"))
 
     # ── Chat ──────────────────────────────────────────────────────────────────
 
@@ -748,6 +762,13 @@ class SupernaMCPApp(ctk.CTk):
 
         if not self.server_running:
             self._append_chat("error_text", "✗ Start the MCP server first.\n\n")
+            return
+
+        if not self.mcp_tools:
+            self._append_chat("error_text",
+                              "✗ No MCP tools loaded — the server has not returned any tools.\n"
+                              "  Check superna_mcp.log for registration errors.\n\n")
+            gui_log.error("GUI  Send blocked — mcp_tools is empty")
             return
 
         provider = self.llm_var.get()

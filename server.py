@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.0.7"
+BUILD = "1.0.8"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -63,6 +63,9 @@ def _setup_logging() -> logging.Logger:
 log = _setup_logging()
 
 
+_registered_tools: list[str] = []
+
+
 def _mcp_tool(func):
     """
     Drop-in replacement for @mcp.tool().
@@ -87,7 +90,10 @@ def _mcp_tool(func):
                 log.error("TOOL ERROR %-38s  %s: %s\n%s",
                           func.__name__, type(exc).__name__, exc, traceback.format_exc())
             raise
-    return mcp.tool()(wrapper)
+    result = mcp.tool()(wrapper)
+    _registered_tools.append(func.__name__)
+    log.debug("Registered tool [%d]: %s", len(_registered_tools), func.__name__)
+    return result
 
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -807,6 +813,7 @@ if __name__ == "__main__":
              port if transport == "sse" else "n/a")
     log.info("Eyeglass host: %s  verify_ssl=%s", EYEGLASS_HOST, EYEGLASS_VERIFY_SSL)
     log.info("Log file: %s", Path(os.path.abspath(__file__)).parent / "superna_mcp.log")
+    log.info("Tools registered: %d  %s", len(_registered_tools), _registered_tools)
 
     try:
         if transport == "sse":

@@ -8,6 +8,7 @@ import sys
 import json
 import time
 import shutil
+import logging
 import threading
 import subprocess
 import asyncio
@@ -57,7 +58,33 @@ def _extract_bundled_files():
         if filename == "server.py" or not dst.exists():
             shutil.copy2(src, dst)
 
-BUILD = "1.0.3"
+BUILD = "1.0.4"
+
+
+def _gui_log_path() -> Path:
+    """Same superna_mcp.log used by server.py — one unified log for both processes."""
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent / "superna_mcp.log"
+    return Path(os.path.abspath(__file__)).parent / "superna_mcp.log"
+
+
+def _setup_gui_logging() -> logging.Logger:
+    log_path = _gui_log_path()
+    logger = logging.getLogger("superna_gui")
+    logger.setLevel(logging.DEBUG)
+    if not logger.handlers:
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s  %(levelname)-8s  %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        logger.addHandler(fh)
+    return logger
+
+
+gui_log = _setup_gui_logging()
+
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
@@ -609,6 +636,8 @@ class SupernaMCPApp(ctk.CTk):
 
         port = int(self.port_var.get() or 8000)
         self._append_chat("muted", f"⟳ Starting MCP server on port {port}...\n")
+        gui_log.info("=" * 60)
+        gui_log.info("GUI  Starting server  path=%s  port=%s", server_path, port)
 
         try:
             self.server_process = subprocess.Popen(
@@ -636,9 +665,11 @@ class SupernaMCPApp(ctk.CTk):
                 msg = f"✗ Server process exited unexpectedly.\n"
                 if stderr:
                     msg += f"  Error: {stderr}\n"
+                    gui_log.error("GUI  Server exited unexpectedly:\n%s", stderr)
                 else:
                     msg += "  Check that all Python packages are installed:\n"
                     msg += "  pip install mcp requests cryptography urllib3\n"
+                    gui_log.error("GUI  Server exited unexpectedly (no stderr)")
                 self.after(0, lambda m=msg: self._append_chat("error_text", m))
                 return
             try:
@@ -661,8 +692,10 @@ class SupernaMCPApp(ctk.CTk):
         self.status_lbl.configure(text="Server running")
         self.start_btn.configure(text="■  Stop Server", fg_color=ERROR, hover_color="#b91c1c")
         self._append_chat("muted", "✓ MCP server ready\n")
+        gui_log.info("GUI  Server ready")
 
     def _stop_server(self):
+        gui_log.info("GUI  Server stopped by user")
         if self.server_process:
             self.server_process.terminate()
             self.server_process = None
@@ -728,6 +761,7 @@ class SupernaMCPApp(ctk.CTk):
         ts = datetime.now().strftime("%H:%M:%S")
         self._append_chat("user_label", f"\n[{ts}] YOU\n")
         self._append_chat("user_text", f"{prompt}\n")
+        gui_log.info("USER  %s", prompt)
 
         self.send_btn.configure(state="disabled", text="…")
         threading.Thread(target=self._run_agentic_loop, args=(prompt,), daemon=True).start()
@@ -740,6 +774,7 @@ class SupernaMCPApp(ctk.CTk):
             else:
                 self._anthropic_loop(prompt)
         except Exception as e:
+            gui_log.error("GUI LOOP ERROR  %s: %s", type(e).__name__, e, exc_info=True)
             self.after(0, lambda: self._append_chat("error_text", f"\n✗ Error: {e}\n\n"))
         finally:
             self.after(0, lambda: self.send_btn.configure(state="normal", text="Send"))
@@ -785,15 +820,18 @@ class SupernaMCPApp(ctk.CTk):
                 for tc in msg.tool_calls:
                     fn = tc.function.name
                     args = json.loads(tc.function.arguments or "{}")
+                    gui_log.info("GUI TOOL CALL  %-38s  args=%s", fn, args)
                     self.after(0, lambda f=fn, a=args: (
                         self._append_chat("tool_label", f"\n⚙  TOOL: {f}\n"),
                         self._append_chat("tool_text", f"   args: {json.dumps(a)}\n")
                     ))
                     try:
                         result = loop.run_until_complete(call_mcp_tool(sse_url, fn, args))
+                        gui_log.info("GUI TOOL OK    %-38s  result=%s", fn, result[:500])
                     except Exception as e:
+                        gui_log.error("GUI TOOL ERROR %-38s  %s: %s", fn, type(e).__name__, e)
                         result = f"Error: {e}"
-                    self.after(0, lambda r=result: self._append_chat("tool_text", f"   → {r[:300]}\n"))
+                    self.after(0, lambda r=result: self._append_chat("tool_text", f"   -> {r[:300]}\n"))
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -801,6 +839,7 @@ class SupernaMCPApp(ctk.CTk):
                     })
             else:
                 final = msg.content or ""
+                gui_log.info("AI RESPONSE  %s", final[:1000])
                 ts = datetime.now().strftime("%H:%M:%S")
                 self.after(0, lambda t=ts, f=final: (
                     self._append_chat("ai_label", f"\n[{t}] EYEGLASS AI\n"),
@@ -856,15 +895,18 @@ class SupernaMCPApp(ctk.CTk):
                 for tu in tool_uses:
                     fn = tu.name
                     args = tu.input or {}
+                    gui_log.info("GUI TOOL CALL  %-38s  args=%s", fn, args)
                     self.after(0, lambda f=fn, a=args: (
                         self._append_chat("tool_label", f"\n⚙  TOOL: {f}\n"),
                         self._append_chat("tool_text", f"   args: {json.dumps(a)}\n")
                     ))
                     try:
                         result = loop.run_until_complete(call_mcp_tool(sse_url, fn, args))
+                        gui_log.info("GUI TOOL OK    %-38s  result=%s", fn, result[:500])
                     except Exception as e:
+                        gui_log.error("GUI TOOL ERROR %-38s  %s: %s", fn, type(e).__name__, e)
                         result = f"Error: {e}"
-                    self.after(0, lambda r=result: self._append_chat("tool_text", f"   → {r[:300]}\n"))
+                    self.after(0, lambda r=result: self._append_chat("tool_text", f"   -> {r[:300]}\n"))
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tu.id,
@@ -873,6 +915,7 @@ class SupernaMCPApp(ctk.CTk):
                 messages.append({"role": "user", "content": tool_results})
             else:
                 final = " ".join(b.text for b in text_blocks)
+                gui_log.info("AI RESPONSE  %s", final[:1000])
                 ts = datetime.now().strftime("%H:%M:%S")
                 self.after(0, lambda t=ts, f=final: (
                     self._append_chat("ai_label", f"\n[{t}] EYEGLASS AI\n"),

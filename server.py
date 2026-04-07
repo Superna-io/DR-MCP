@@ -14,6 +14,7 @@ import os
 import json
 import logging
 import traceback
+import functools
 import urllib3
 import requests
 from pathlib import Path
@@ -24,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.0.3"
+BUILD = "1.0.4"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,27 @@ def _setup_logging() -> logging.Logger:
     return logger
 
 log = _setup_logging()
+
+
+def _mcp_tool(func):
+    """
+    Drop-in replacement for @_mcp_tool.
+    Logs every tool call, its result, and any exception (including those
+    later wrapped by FastMCP in an ExceptionGroup/TaskGroup error).
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs or args)
+        try:
+            result = func(*args, **kwargs)
+            log.info("TOOL OK    %-38s  result=%s", func.__name__, str(result)[:500])
+            return result
+        except Exception as exc:
+            log.error("TOOL ERROR %-38s  %s: %s\n%s",
+                      func.__name__, type(exc).__name__, exc, traceback.format_exc())
+            raise
+    return mcp.tool()(wrapper)
+
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -161,7 +183,7 @@ mcp = FastMCP(
 # HEALTH
 # ══════════════════════════════════════════════════════════════════════════════
 
-@mcp.tool()
+@_mcp_tool
 def health_check() -> dict:
     """Check the health status of the Superna Eyeglass appliance."""
     return _get("/v1/healthcheck")
@@ -171,13 +193,13 @@ def health_check() -> dict:
 # ALARMS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@mcp.tool()
+@_mcp_tool
 def list_active_alarms() -> list:
     """Return all currently active alarms on the Eyeglass appliance."""
     return _get("/v1/alarms/active")
 
 
-@mcp.tool()
+@_mcp_tool
 def list_historical_alarms() -> list:
     """Return historical (resolved) alarms from the Eyeglass appliance."""
     return _get("/v1/alarms/historical")
@@ -187,7 +209,7 @@ def list_historical_alarms() -> list:
 # NODES (v1)  – Managed PowerScale / Isilon clusters
 # ══════════════════════════════════════════════════════════════════════════════
 
-@mcp.tool()
+@_mcp_tool
 def list_nodes() -> list:
     """
     List all Superna Eyeglass managed PowerScale/Isilon cluster nodes.
@@ -200,7 +222,7 @@ def list_nodes() -> list:
     return _get("/v1/nodes")
 
 
-@mcp.tool()
+@_mcp_tool
 def get_node(node_id: str) -> dict:
     """
     Retrieve details for a specific managed node.
@@ -211,7 +233,7 @@ def get_node(node_id: str) -> dict:
     return _get(f"/v1/nodes/{node_id}")
 
 
-@mcp.tool()
+@_mcp_tool
 def list_node_policies(
     node_id: str,
     fo_readiness: bool = False,
@@ -226,7 +248,7 @@ def list_node_policies(
     return _get(f"/v1/nodes/{node_id}/policies", params={"foReadiness": str(fo_readiness).lower()})
 
 
-@mcp.tool()
+@_mcp_tool
 def get_node_policy(node_id: str, policy_name: str) -> dict:
     """
     Retrieve a single SyncIQ policy by name on a given node.
@@ -238,7 +260,7 @@ def get_node_policy(node_id: str, policy_name: str) -> dict:
     return _get(f"/v1/nodes/{node_id}/policies/{policy_name}")
 
 
-@mcp.tool()
+@_mcp_tool
 def list_node_zones(
     node_id: str,
     fo_readiness: bool = False,
@@ -253,7 +275,7 @@ def list_node_zones(
     return _get(f"/v1/nodes/{node_id}/zones", params={"foReadiness": str(fo_readiness).lower()})
 
 
-@mcp.tool()
+@_mcp_tool
 def get_node_zone(node_id: str, zone_name: str) -> dict:
     """
     Retrieve a specific Access Zone by name on a given node.
@@ -265,7 +287,7 @@ def get_node_zone(node_id: str, zone_name: str) -> dict:
     return _get(f"/v1/nodes/{node_id}/zones/{zone_name}")
 
 
-@mcp.tool()
+@_mcp_tool
 def list_node_pools(
     node_id: str,
     fo_readiness: bool = False,
@@ -280,7 +302,7 @@ def list_node_pools(
     return _get(f"/v1/nodes/{node_id}/pools", params={"foReadiness": str(fo_readiness).lower()})
 
 
-@mcp.tool()
+@_mcp_tool
 def get_node_pool(node_id: str, pool_name: str) -> dict:
     """
     Retrieve a specific pool by name on a given node.
@@ -296,7 +318,7 @@ def get_node_pool(node_id: str, pool_name: str) -> dict:
 # FAILOVER JOBS (v1)  – Legacy endpoint, policy-level failover
 # ══════════════════════════════════════════════════════════════════════════════
 
-@mcp.tool()
+@_mcp_tool
 def list_failover_jobs_v1(
     state: Optional[str] = None,
     success: Optional[bool] = None,
@@ -311,7 +333,7 @@ def list_failover_jobs_v1(
     return _get("/v1/jobs", params=_clean({"state": state, "success": success}))
 
 
-@mcp.tool()
+@_mcp_tool
 def create_failover_job_v1(
     sourceid: str,
     targetid: str,
@@ -366,7 +388,7 @@ def create_failover_job_v1(
     return _post("/v1/jobs", params=params)
 
 
-@mcp.tool()
+@_mcp_tool
 def get_failover_job_v1(job_id: str) -> dict:
     """
     Retrieve a failover job by ID (v1 API).
@@ -377,7 +399,7 @@ def get_failover_job_v1(job_id: str) -> dict:
     return _get(f"/v1/jobs/{job_id}")
 
 
-@mcp.tool()
+@_mcp_tool
 def cancel_failover_job_v1(job_id: str) -> dict:
     """
     Cancel a running failover job (v1 API).
@@ -388,7 +410,7 @@ def cancel_failover_job_v1(job_id: str) -> dict:
     return _delete(f"/v1/jobs/{job_id}")
 
 
-@mcp.tool()
+@_mcp_tool
 def get_failover_job_log_v1(job_id: str) -> str:
     """
     Retrieve the log output for a failover job (v1 API).
@@ -399,7 +421,7 @@ def get_failover_job_log_v1(job_id: str) -> str:
     return _get(f"/v1/jobs/{job_id}/log")
 
 
-@mcp.tool()
+@_mcp_tool
 def dr_test_mode_v1(
     policy: str,
     enable: bool,
@@ -428,7 +450,7 @@ def dr_test_mode_v1(
     return _post("/v1/jobs/drtest", params=params)
 
 
-@mcp.tool()
+@_mcp_tool
 def create_rehearsal_job_v1(
     sourceid: str,
     targetid: str,
@@ -463,7 +485,7 @@ def create_rehearsal_job_v1(
 # FAILOVER JOBS (v2)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@mcp.tool()
+@_mcp_tool
 def list_failover_jobs_v2(
     state: Optional[str] = None,
     success: Optional[bool] = None,
@@ -478,7 +500,7 @@ def list_failover_jobs_v2(
     return _get("/v2/jobs/failover", params=_clean({"state": state, "success": success}))
 
 
-@mcp.tool()
+@_mcp_tool
 def create_failover_job_v2(
     sourceid: str,
     targetid: str,
@@ -533,7 +555,7 @@ def create_failover_job_v2(
     return _post("/v2/jobs/failover", params=params)
 
 
-@mcp.tool()
+@_mcp_tool
 def get_failover_job_v2(job_id: str) -> dict:
     """
     Retrieve a failover job by ID (v2 API).
@@ -544,7 +566,7 @@ def get_failover_job_v2(job_id: str) -> dict:
     return _get(f"/v2/jobs/failover/{job_id}")
 
 
-@mcp.tool()
+@_mcp_tool
 def cancel_failover_job_v2(job_id: str) -> dict:
     """
     Cancel a running failover job (v2 API).
@@ -555,7 +577,7 @@ def cancel_failover_job_v2(job_id: str) -> dict:
     return _delete(f"/v2/jobs/failover/{job_id}")
 
 
-@mcp.tool()
+@_mcp_tool
 def get_failover_job_log_v2(job_id: str) -> str:
     """
     Retrieve the log output for a failover job (v2 API).
@@ -566,7 +588,7 @@ def get_failover_job_log_v2(job_id: str) -> str:
     return _get(f"/v2/jobs/failover/{job_id}/log")
 
 
-@mcp.tool()
+@_mcp_tool
 def dr_test_mode_v2(
     policy: str,
     enable: bool,
@@ -595,7 +617,7 @@ def dr_test_mode_v2(
     return _post("/v2/jobs/failover/drtest", params=params)
 
 
-@mcp.tool()
+@_mcp_tool
 def create_rehearsal_job_v2(
     sourceid: str,
     targetid: str,
@@ -630,13 +652,13 @@ def create_rehearsal_job_v2(
 # READINESS JOBS (v2)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@mcp.tool()
+@_mcp_tool
 def list_readiness_jobs() -> list:
     """List recent DR readiness assessment jobs."""
     return _get("/v2/jobs/readiness")
 
 
-@mcp.tool()
+@_mcp_tool
 def run_readiness_job() -> dict:
     """
     Run a new DR readiness job.
@@ -647,7 +669,7 @@ def run_readiness_job() -> dict:
     return _post("/v2/jobs/readiness")
 
 
-@mcp.tool()
+@_mcp_tool
 def get_readiness_job(job_id: str) -> dict:
     """
     Retrieve the results of a specific readiness job.
@@ -662,13 +684,13 @@ def get_readiness_job(job_id: str) -> dict:
 # REPLICATION JOBS (v2)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@mcp.tool()
+@_mcp_tool
 def list_replication_jobs() -> list:
     """List recent configuration replication jobs."""
     return _get("/v2/jobs/replication")
 
 
-@mcp.tool()
+@_mcp_tool
 def run_replication_job() -> dict:
     """
     Run a configuration replication job immediately.
@@ -679,7 +701,7 @@ def run_replication_job() -> dict:
     return _post("/v2/jobs/replication")
 
 
-@mcp.tool()
+@_mcp_tool
 def get_replication_job(job_id: str) -> dict:
     """
     Retrieve a specific replication job's details.
@@ -694,7 +716,7 @@ def get_replication_job(job_id: str) -> dict:
 # CONFIGURATION REPLICATION JOBS (v2) — per-node
 # ══════════════════════════════════════════════════════════════════════════════
 
-@mcp.tool()
+@_mcp_tool
 def list_node_configrep_jobs(node_id: str) -> list:
     """
     List all configuration replication jobs for a specific node.
@@ -705,7 +727,7 @@ def list_node_configrep_jobs(node_id: str) -> list:
     return _get(f"/v2/nodes/{node_id}/configrep")
 
 
-@mcp.tool()
+@_mcp_tool
 def get_node_configrep_job(node_id: str, job_name: str) -> dict:
     """
     Get a specific configuration replication job on a node.
@@ -717,7 +739,7 @@ def get_node_configrep_job(node_id: str, job_name: str) -> dict:
     return _get(f"/v2/nodes/{node_id}/configrep/{job_name}")
 
 
-@mcp.tool()
+@_mcp_tool
 def update_node_configrep_job(
     node_id: str,
     job_name: str,

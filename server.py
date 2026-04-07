@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.1.2"
+BUILD = "1.1.3"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -167,57 +167,69 @@ def _log_error(method: str, url: str, params, exc: Exception) -> None:
     log.debug(traceback.format_exc())
 
 
-_TIMEOUT = 30  # seconds — prevents blocking the asyncio event loop indefinitely
+_TIMEOUT = 15  # seconds — short enough to surface errors quickly
 
 
 def _get(path: str, params: dict = None) -> dict | list:
     url = f"{BASE_URL}{path}"
+    print(f"[HTTP GET ] {url}", flush=True)
     try:
         resp = requests.get(url, headers=_headers(), params=params,
                             verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
+        print(f"[HTTP GOT ] {url}  {resp.status_code}", flush=True)
         _log_response("GET", url, params, resp)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
+        print(f"[HTTP ERR ] GET {url}  {type(exc).__name__}: {exc}", flush=True)
         _log_error("GET", url, params, exc)
         raise
 
 
 def _post(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
+    print(f"[HTTP POST] {url}", flush=True)
     try:
         resp = requests.post(url, headers=_headers(), params=params,
                              verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
+        print(f"[HTTP GOT ] {url}  {resp.status_code}", flush=True)
         _log_response("POST", url, params, resp)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
+        print(f"[HTTP ERR ] POST {url}  {type(exc).__name__}: {exc}", flush=True)
         _log_error("POST", url, params, exc)
         raise
 
 
 def _delete(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
+    print(f"[HTTP DEL ] {url}", flush=True)
     try:
         resp = requests.delete(url, headers=_headers(), params=params, json={},
                                verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
+        print(f"[HTTP GOT ] {url}  {resp.status_code}", flush=True)
         _log_response("DELETE", url, params, resp)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
+        print(f"[HTTP ERR ] DELETE {url}  {type(exc).__name__}: {exc}", flush=True)
         _log_error("DELETE", url, params, exc)
         raise
 
 
 def _put(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
+    print(f"[HTTP PUT ] {url}", flush=True)
     try:
         resp = requests.put(url, headers=_headers(), params=params,
                             verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
+        print(f"[HTTP GOT ] {url}  {resp.status_code}", flush=True)
         _log_response("PUT", url, params, resp)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
+        print(f"[HTTP ERR ] PUT {url}  {type(exc).__name__}: {exc}", flush=True)
         _log_error("PUT", url, params, exc)
         raise
 

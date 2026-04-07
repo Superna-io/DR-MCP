@@ -58,7 +58,7 @@ def _extract_bundled_files():
         if filename == "server.py" or not dst.exists():
             shutil.copy2(src, dst)
 
-BUILD = "1.1.2"
+BUILD = "1.1.3"
 
 
 def _gui_log_path() -> Path:

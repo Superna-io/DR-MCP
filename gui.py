@@ -42,7 +42,9 @@ def _extract_bundled_files():
     """
     When running as a frozen exe, copy server.py and superna_mcp.json
     from the PyInstaller temp bundle to the same folder as the exe.
-    Skips any file that already exists so user edits are preserved.
+    server.py is always overwritten (it is code, not user data).
+    superna_mcp.json is only copied if it does not already exist so
+    user configuration is preserved across upgrades.
     """
     if not _is_frozen():
         return
@@ -50,7 +52,9 @@ def _extract_bundled_files():
     for filename in ("server.py", "superna_mcp.json"):
         src = _bundle_dir() / filename
         dst = exe_dir / filename
-        if src.exists() and not dst.exists():
+        if not src.exists():
+            continue
+        if filename == "server.py" or not dst.exists():
             shutil.copy2(src, dst)
 
 BUILD = "1.0.1"

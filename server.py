@@ -30,6 +30,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BUILD = "1.1.6"
 
+
 # ─── Non-blocking stdout ──────────────────────────────────────────────────────
 # print(..., flush=True) inside a tool worker thread will BLOCK when the stdout
 # pipe (to the GUI) is full.  This mirrors the QueueHandler fix for logging:
@@ -63,7 +64,7 @@ threading.Thread(target=_stdout_worker, daemon=True, name="stdout-writer").start
 def _setup_logging() -> logging.Logger:
     # Use abspath so Path(__file__) works even when invoked with a relative path
     log_path = Path(os.path.abspath(__file__)).parent / "superna_mcp.log"
-    _nb_print(\1)
+    _nb_print(f"[superna_mcp] log -> {log_path}")
 
     fmt = logging.Formatter(
         "%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s",
@@ -130,19 +131,19 @@ def _mcp_tool(func):
             # These prints go to the server console / piped stdout so the
             # GUI can stream them live.  They run inside the worker thread,
             # not the event loop.
-            _nb_print(\1)
+            _nb_print(f"[TOOL >>] {func.__name__}  {str(kwargs)[:200]}")
             log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs)
             try:
                 result = func(**kwargs)
-                _nb_print(\1)
+                _nb_print(f"[TOOL RES] {func.__name__} returned")
                 # Use _safe_snippet — never calls str() on the full object,
                 # which can be very slow for large SyncIQ readiness payloads.
                 snippet = _safe_snippet(result, 300)
-                _nb_print(\1)
+                _nb_print(f"[TOOL <<] {func.__name__}  OK  {snippet}")
                 log.info("TOOL OK    %-38s  result=%s", func.__name__, snippet)
                 return result
             except BaseException as exc:
-                _nb_print(\1)
+                _nb_print(f"[TOOL !!] {func.__name__}  {type(exc).__name__}: {exc}")
                 if isinstance(exc, BaseExceptionGroup):
                     for i, sub in enumerate(exc.exceptions, 1):
                         log.error("TOOL ERROR %-38s  sub[%d] %s: %s\n%s",
@@ -155,9 +156,9 @@ def _mcp_tool(func):
 
         # This print runs on the event loop thread — useful to confirm the
         # event loop is alive when a second tool call arrives.
-        _nb_print(\1)
+        _nb_print(f"[TOOL ..] {func.__name__} — dispatching to thread")
         result = await anyio.to_thread.run_sync(_run, cancellable=True)
-        _nb_print(\1)
+        _nb_print(f"[TOOL OK] {func.__name__} — thread returned")
         return result
 
     registered = mcp.tool()(wrapper)
@@ -215,7 +216,7 @@ def _log_response(method: str, url: str, params, resp) -> None:
     body_bytes = len(resp.content)
     log.info("%-6s %s  params=%s  -> HTTP %s  body=%d bytes",
              method, url, params, resp.status_code, body_bytes)
-    _nb_print(\1)
+    _nb_print(f"[HTTP BDY ] body={body_bytes} bytes")
     try:
         # Only log the body text for small responses — large responses
         # keep the debug line brief to avoid slow str operations on the log thread.
@@ -237,68 +238,68 @@ _TIMEOUT = 15  # seconds — short enough to surface errors quickly
 
 def _get(path: str, params: dict = None) -> dict | list:
     url = f"{BASE_URL}{path}"
-    _nb_print(\1)
+    _nb_print(f"[HTTP GET ] {url}")
     try:
         resp = requests.get(url, headers=_headers(), params=params,
                             verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
-        _nb_print(\1)
+        _nb_print(f"[HTTP GOT ] {url}  {resp.status_code}")
         _log_response("GET", url, params, resp)
-        _nb_print(\1)
+        _nb_print(f"[HTTP LOG ] logged")
         resp.raise_for_status()
-        _nb_print(\1)
+        _nb_print(f"[HTTP STS ] status ok")
         data = resp.json()
-        _nb_print(\1)
+        _nb_print(f"[HTTP JSN ] json parsed  type={type(data).__name__}")
         return data
     except Exception as exc:
-        _nb_print(\1)
+        _nb_print(f"[HTTP ERR ] GET {url}  {type(exc).__name__}: {exc}")
         _log_error("GET", url, params, exc)
         raise
 
 
 def _post(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
-    _nb_print(\1)
+    _nb_print(f"[HTTP POST] {url}")
     try:
         resp = requests.post(url, headers=_headers(), params=params,
                              verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
-        _nb_print(\1)
+        _nb_print(f"[HTTP GOT ] {url}  {resp.status_code}")
         _log_response("POST", url, params, resp)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
-        _nb_print(\1)
+        _nb_print(f"[HTTP ERR ] POST {url}  {type(exc).__name__}: {exc}")
         _log_error("POST", url, params, exc)
         raise
 
 
 def _delete(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
-    _nb_print(\1)
+    _nb_print(f"[HTTP DEL ] {url}")
     try:
         resp = requests.delete(url, headers=_headers(), params=params, json={},
                                verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
-        _nb_print(\1)
+        _nb_print(f"[HTTP GOT ] {url}  {resp.status_code}")
         _log_response("DELETE", url, params, resp)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
-        _nb_print(\1)
+        _nb_print(f"[HTTP ERR ] DELETE {url}  {type(exc).__name__}: {exc}")
         _log_error("DELETE", url, params, exc)
         raise
 
 
 def _put(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
-    _nb_print(\1)
+    _nb_print(f"[HTTP PUT ] {url}")
     try:
         resp = requests.put(url, headers=_headers(), params=params,
                             verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
-        _nb_print(\1)
+        _nb_print(f"[HTTP GOT ] {url}  {resp.status_code}")
         _log_response("PUT", url, params, resp)
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
-        _nb_print(\1)
+        _nb_print(f"[HTTP ERR ] PUT {url}  {type(exc).__name__}: {exc}")
         _log_error("PUT", url, params, exc)
         raise
 
@@ -919,13 +920,13 @@ if __name__ == "__main__":
     # Console banner — visible in the server's console window and the GUI
     # console panel (which streams server stdout via subprocess pipe).
     _nb_print("=" * 55)
-    _nb_print(\1)
-    _nb_print(\1)
+    _nb_print(f"  Superna Eyeglass MCP Server  v{BUILD}")
+    _nb_print(f"  Transport : {transport}")
     if transport == "sse":
-        _nb_print(\1)
-    _nb_print(\1)
-    _nb_print(\1)
-    _nb_print(\1)
+        _nb_print(f"  SSE URL   : http://127.0.0.1:{port}/sse")
+    _nb_print(f"  Eyeglass  : {EYEGLASS_HOST}  ssl={EYEGLASS_VERIFY_SSL}")
+    _nb_print(f"  Log file  : {_log_path}")
+    _nb_print(f"  Tools     : {len(_registered_tools)}")
     _nb_print("=" * 55)
 
     log.info("=" * 60)

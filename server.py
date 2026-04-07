@@ -28,7 +28,34 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.1.6"
+BUILD = "1.1.7"
+
+
+# ─── Synchronous trace ────────────────────────────────────────────────────────
+# Writes DIRECTLY to superna_trace.log — no queue, no pipe, no buffering.
+# This is the only reliable way to see exactly which line is blocking when
+# both the stdout pipe AND the log queue are potentially stalled.
+# Uses a threading.Lock so concurrent tool threads don't interleave writes.
+
+import time as _time
+
+_trace_lock = threading.Lock()
+
+
+def _trace(msg: str) -> None:
+    """Synchronous direct-to-file trace — survives stdout/log queue stalls."""
+    try:
+        ts = _time.strftime("%H:%M:%S")
+        tname = threading.current_thread().name
+        line = f"{ts}  [{tname}]  {msg}\n"
+        trace_path = Path(os.path.abspath(__file__)).parent / "superna_trace.log"
+        with _trace_lock:
+            with open(trace_path, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+    except Exception:
+        pass
 
 
 # ─── Non-blocking stdout ──────────────────────────────────────────────────────
@@ -131,18 +158,26 @@ def _mcp_tool(func):
             # These prints go to the server console / piped stdout so the
             # GUI can stream them live.  They run inside the worker thread,
             # not the event loop.
+            _trace(f"_run ENTER  {func.__name__}")
             _nb_print(f"[TOOL >>] {func.__name__}  {str(kwargs)[:200]}")
             log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs)
             try:
+                _trace(f"_run calling func  {func.__name__}")
                 result = func(**kwargs)
+                _trace(f"_run func returned  {func.__name__}")
                 _nb_print(f"[TOOL RES] {func.__name__} returned")
                 # Use _safe_snippet — never calls str() on the full object,
                 # which can be very slow for large SyncIQ readiness payloads.
+                _trace(f"_run _safe_snippet  {func.__name__}")
                 snippet = _safe_snippet(result, 300)
+                _trace(f"_run _safe_snippet done  {func.__name__}")
                 _nb_print(f"[TOOL <<] {func.__name__}  OK  {snippet}")
+                _trace(f"_run log.info TOOL OK  {func.__name__}")
                 log.info("TOOL OK    %-38s  result=%s", func.__name__, snippet)
+                _trace(f"_run RETURN  {func.__name__}")
                 return result
             except BaseException as exc:
+                _trace(f"_run EXCEPT  {func.__name__}  {type(exc).__name__}: {exc}")
                 _nb_print(f"[TOOL !!] {func.__name__}  {type(exc).__name__}: {exc}")
                 if isinstance(exc, BaseExceptionGroup):
                     for i, sub in enumerate(exc.exceptions, 1):
@@ -157,7 +192,9 @@ def _mcp_tool(func):
         # This print runs on the event loop thread — useful to confirm the
         # event loop is alive when a second tool call arrives.
         _nb_print(f"[TOOL ..] {func.__name__} — dispatching to thread")
+        _trace(f"wrapper AWAIT run_sync  {func.__name__}")
         result = await anyio.to_thread.run_sync(_run, cancellable=True)
+        _trace(f"wrapper run_sync RETURNED  {func.__name__}")
         _nb_print(f"[TOOL OK] {func.__name__} — thread returned")
         return result
 
@@ -213,9 +250,12 @@ def _safe_snippet(obj, max_chars: int = 300) -> str:
 
 
 def _log_response(method: str, url: str, params, resp) -> None:
+    _trace(f"_log_response ENTER  {method} {url}  status={resp.status_code}")
     body_bytes = len(resp.content)
+    _trace(f"_log_response len(resp.content)={body_bytes}")
     log.info("%-6s %s  params=%s  -> HTTP %s  body=%d bytes",
              method, url, params, resp.status_code, body_bytes)
+    _trace(f"_log_response log.info done")
     _nb_print(f"[HTTP BDY ] body={body_bytes} bytes")
     try:
         # Only log the body text for small responses — large responses
@@ -226,6 +266,7 @@ def _log_response(method: str, url: str, params, resp) -> None:
             log.debug("       response body: <large %d bytes — truncated>", body_bytes)
     except Exception:
         pass
+    _trace(f"_log_response EXIT")
 
 
 def _log_error(method: str, url: str, params, exc: Exception) -> None:
@@ -238,19 +279,26 @@ _TIMEOUT = 15  # seconds — short enough to surface errors quickly
 
 def _get(path: str, params: dict = None) -> dict | list:
     url = f"{BASE_URL}{path}"
+    _trace(f"_get ENTER  {url}")
     _nb_print(f"[HTTP GET ] {url}")
     try:
         resp = requests.get(url, headers=_headers(), params=params,
                             verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
+        _trace(f"_get GOT  {url}  status={resp.status_code}")
         _nb_print(f"[HTTP GOT ] {url}  {resp.status_code}")
         _log_response("GET", url, params, resp)
         _nb_print(f"[HTTP LOG ] logged")
+        _trace(f"_get raise_for_status  status={resp.status_code}")
         resp.raise_for_status()
+        _trace(f"_get before resp.json()")
         _nb_print(f"[HTTP STS ] status ok")
         data = resp.json()
+        _trace(f"_get after resp.json()  type={type(data).__name__}")
         _nb_print(f"[HTTP JSN ] json parsed  type={type(data).__name__}")
+        _trace(f"_get RETURN  {url}")
         return data
     except Exception as exc:
+        _trace(f"_get EXCEPT  {url}  {type(exc).__name__}: {exc}")
         _nb_print(f"[HTTP ERR ] GET {url}  {type(exc).__name__}: {exc}")
         _log_error("GET", url, params, exc)
         raise

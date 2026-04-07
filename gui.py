@@ -58,7 +58,7 @@ def _extract_bundled_files():
         if filename == "server.py" or not dst.exists():
             shutil.copy2(src, dst)
 
-BUILD = "1.0.6"
+BUILD = "1.0.7"
 
 
 def _gui_log_path() -> Path:
@@ -793,33 +793,50 @@ class SupernaMCPApp(ctk.CTk):
 
         loop = asyncio.new_event_loop()
         tools_schema = mcp_tools_to_openai_schema(self.mcp_tools)
+        tools_used_total = 0
+        first_call = True
+
+        SYSTEM = (
+            "You are a Superna Eyeglass DR operations assistant. "
+            "You have MCP tools that query the live Eyeglass appliance in real time. "
+            "RULES — you must follow these without exception:\n"
+            "1. ALWAYS call the appropriate MCP tool(s) before answering any question about system state.\n"
+            "2. NEVER answer from training knowledge, guess, estimate, or fabricate any data.\n"
+            "3. If a tool returns an error, report the exact error — do not substitute invented data.\n"
+            "4. Every factual claim in your answer must come directly from a tool result in this conversation."
+        )
 
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an AI assistant with access to the Superna Eyeglass DR failover API. "
-                    "Use the available tools to answer questions about DR readiness, nodes, jobs, and alarms. "
-                    "Always call relevant tools to get real data rather than guessing."
-                )
-            },
+            {"role": "system", "content": SYSTEM},
             {"role": "user", "content": prompt}
         ]
 
+        gui_log.info("LOOP START (openai)  prompt=%s", prompt[:200])
+
         while True:
+            # Force tool use on the first call so the LLM cannot answer from training data.
+            # After tool results are in, switch to auto so it can give a final answer.
+            if tools_schema:
+                tc_setting = "required" if first_call else "auto"
+            else:
+                tc_setting = openai.NOT_GIVEN
+
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=tools_schema if tools_schema else openai.NOT_GIVEN,
-                tool_choice="auto" if tools_schema else openai.NOT_GIVEN,
+                tool_choice=tc_setting,
             )
+            first_call = False
             msg = response.choices[0].message
 
             if msg.tool_calls:
                 messages.append(msg)
+                gui_log.info("LLM called %d tool(s) this turn", len(msg.tool_calls))
                 for tc in msg.tool_calls:
                     fn = tc.function.name
                     args = json.loads(tc.function.arguments or "{}")
+                    tools_used_total += 1
                     gui_log.info("GUI TOOL CALL  %-38s  args=%s", fn, args)
                     self.after(0, lambda f=fn, a=args: (
                         self._append_chat("tool_label", f"\n⚙  TOOL: {f}\n"),
@@ -839,7 +856,12 @@ class SupernaMCPApp(ctk.CTk):
                     })
             else:
                 final = msg.content or ""
-                gui_log.info("AI RESPONSE  %s", final[:1000])
+                if tools_used_total == 0:
+                    gui_log.warning("WARNING: LLM answered without calling ANY tools — response may be fabricated")
+                    self.after(0, lambda: self._append_chat(
+                        "error_text", "⚠  WARNING: No MCP tools were called — answer may not reflect live data.\n"
+                    ))
+                gui_log.info("LOOP END (openai)  tools_used=%d  response=%s", tools_used_total, final[:1000])
                 ts = datetime.now().strftime("%H:%M:%S")
                 self.after(0, lambda t=ts, f=final: (
                     self._append_chat("ai_label", f"\n[{t}] EYEGLASS AI\n"),
@@ -863,38 +885,49 @@ class SupernaMCPApp(ctk.CTk):
 
         loop = asyncio.new_event_loop()
         tools_schema = mcp_tools_to_anthropic_schema(self.mcp_tools)
+        tools_used_total = 0
+        first_call = True
 
-        system_prompt = (
-            "You are an AI assistant with access to the Superna Eyeglass DR failover API. "
-            "Use the available tools to answer questions about DR readiness, nodes, jobs, and alarms. "
-            "Always call relevant tools to get real data rather than guessing."
+        SYSTEM = (
+            "You are a Superna Eyeglass DR operations assistant. "
+            "You have MCP tools that query the live Eyeglass appliance in real time. "
+            "RULES — you must follow these without exception:\n"
+            "1. ALWAYS call the appropriate MCP tool(s) before answering any question about system state.\n"
+            "2. NEVER answer from training knowledge, guess, estimate, or fabricate any data.\n"
+            "3. If a tool returns an error, report the exact error — do not substitute invented data.\n"
+            "4. Every factual claim in your answer must come directly from a tool result in this conversation."
         )
 
         messages = [{"role": "user", "content": prompt}]
+
+        gui_log.info("LOOP START (anthropic)  prompt=%s", prompt[:200])
 
         while True:
             kwargs = dict(
                 model=model,
                 max_tokens=4096,
-                system=system_prompt,
+                system=SYSTEM,
                 messages=messages,
             )
             if tools_schema:
                 kwargs["tools"] = tools_schema
+                # Force tool use on the first call; auto after tool results are in
+                kwargs["tool_choice"] = {"type": "any"} if first_call else {"type": "auto"}
 
             response = client.messages.create(**kwargs)
+            first_call = False
 
-            # Check for tool use
             tool_uses = [b for b in response.content if b.type == "tool_use"]
             text_blocks = [b for b in response.content if b.type == "text"]
 
             if tool_uses:
-                # Add assistant message
                 messages.append({"role": "assistant", "content": response.content})
+                gui_log.info("LLM called %d tool(s) this turn", len(tool_uses))
                 tool_results = []
                 for tu in tool_uses:
                     fn = tu.name
                     args = tu.input or {}
+                    tools_used_total += 1
                     gui_log.info("GUI TOOL CALL  %-38s  args=%s", fn, args)
                     self.after(0, lambda f=fn, a=args: (
                         self._append_chat("tool_label", f"\n⚙  TOOL: {f}\n"),
@@ -915,7 +948,12 @@ class SupernaMCPApp(ctk.CTk):
                 messages.append({"role": "user", "content": tool_results})
             else:
                 final = " ".join(b.text for b in text_blocks)
-                gui_log.info("AI RESPONSE  %s", final[:1000])
+                if tools_used_total == 0:
+                    gui_log.warning("WARNING: LLM answered without calling ANY tools — response may be fabricated")
+                    self.after(0, lambda: self._append_chat(
+                        "error_text", "⚠  WARNING: No MCP tools were called — answer may not reflect live data.\n"
+                    ))
+                gui_log.info("LOOP END (anthropic)  tools_used=%d  response=%s", tools_used_total, final[:1000])
                 ts = datetime.now().strftime("%H:%M:%S")
                 self.after(0, lambda t=ts, f=final: (
                     self._append_chat("ai_label", f"\n[{t}] EYEGLASS AI\n"),

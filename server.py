@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.0.6"
+BUILD = "1.0.7"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 

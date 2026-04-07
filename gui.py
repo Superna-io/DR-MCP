@@ -56,9 +56,9 @@ def _extract_bundled_files():
         if not src.exists():
             continue
         if filename == "server.py" or not dst.exists():
-            shutil.copy2(src, dst)
+            shutil.copy(src, dst)   # copy() not copy2() — gives the file today's timestamp
 
-BUILD = "1.1.5"
+BUILD = "1.1.6"
 
 
 def _gui_log_path() -> Path:

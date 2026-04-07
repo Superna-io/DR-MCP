@@ -12,7 +12,9 @@ Config: reads from superna_mcp.json in the same directory as this file,
 
 import os
 import json
+import queue
 import logging
+import logging.handlers
 import traceback
 import functools
 import urllib3
@@ -25,7 +27,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.1.4"
+BUILD = "1.1.5"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -42,22 +44,32 @@ def _setup_logging() -> logging.Logger:
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
 
+    # Use QueueHandler so that log.info() / log.debug() in tool worker
+    # threads NEVER block on file I/O.  The GUI process also writes to the
+    # same log file; on Windows, concurrent cross-process file flushes can
+    # cause the FileHandler.flush() call to block indefinitely, freezing the
+    # tool thread mid-execution.  QueueHandler enqueues the record and
+    # returns immediately; a daemon QueueListener thread drains the queue
+    # and does the actual file write in the background.
+    _log_queue: queue.Queue = queue.Queue(-1)   # unbounded
+    queue_handler = logging.handlers.QueueHandler(_log_queue)
+    listener = logging.handlers.QueueListener(_log_queue, fh, respect_handler_level=True)
+    listener.start()
+
     # Our own logger
     logger = logging.getLogger("superna_mcp")
     logger.setLevel(logging.DEBUG)
     if not logger.handlers:
-        logger.addHandler(fh)
+        logger.addHandler(queue_handler)
 
     # Capture FastMCP / uvicorn error logs into the same file at WARNING+.
-    # Do NOT set asyncio or uvicorn.access to DEBUG — synchronous file writes
-    # inside the event loop block it from flushing SSE TCP sends, causing
-    # tool discovery to hang (regression introduced in v1.0.6).
+    # Do NOT set asyncio or uvicorn.access to DEBUG — synchronous writes
+    # inside the event loop block it from flushing SSE TCP sends.
     for lib_name in ("mcp", "uvicorn", "uvicorn.error", "fastapi", "starlette"):
         lib_log = logging.getLogger(lib_name)
         lib_log.setLevel(logging.WARNING)
-        if not any(isinstance(h, logging.FileHandler) and h.baseFilename == str(log_path)
-                   for h in lib_log.handlers):
-            lib_log.addHandler(fh)
+        if not any(isinstance(h, logging.handlers.QueueHandler) for h in lib_log.handlers):
+            lib_log.addHandler(queue_handler)
 
     return logger
 

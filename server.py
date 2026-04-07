@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.0.8"
+BUILD = "1.0.9"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -48,12 +48,13 @@ def _setup_logging() -> logging.Logger:
     if not logger.handlers:
         logger.addHandler(fh)
 
-    # Capture FastMCP / uvicorn / asyncio internal logs into the same file
-    for lib_name in ("mcp", "uvicorn", "uvicorn.error", "uvicorn.access",
-                     "fastapi", "starlette", "asyncio"):
+    # Capture FastMCP / uvicorn error logs into the same file at WARNING+.
+    # Do NOT set asyncio or uvicorn.access to DEBUG — synchronous file writes
+    # inside the event loop block it from flushing SSE TCP sends, causing
+    # tool discovery to hang (regression introduced in v1.0.6).
+    for lib_name in ("mcp", "uvicorn", "uvicorn.error", "fastapi", "starlette"):
         lib_log = logging.getLogger(lib_name)
-        lib_log.setLevel(logging.DEBUG)
-        # Only add if not already attached (handles server restarts)
+        lib_log.setLevel(logging.WARNING)
         if not any(isinstance(h, logging.FileHandler) and h.baseFilename == str(log_path)
                    for h in lib_log.handlers):
             lib_log.addHandler(fh)

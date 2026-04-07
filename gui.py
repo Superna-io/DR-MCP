@@ -58,7 +58,7 @@ def _extract_bundled_files():
         if filename == "server.py" or not dst.exists():
             shutil.copy2(src, dst)
 
-BUILD = "1.1.1"
+BUILD = "1.1.2"
 
 
 def _gui_log_path() -> Path:
@@ -205,7 +205,7 @@ async def get_mcp_tools(sse_url: str) -> list:
 
 
 async def call_mcp_tool(sse_url: str, tool_name: str, arguments: dict) -> str:
-    """Call a single MCP tool and return the text result."""
+    """Call a single MCP tool and return the text result (opens its own session)."""
     async with sse_client(sse_url) as (r, w):
         async with ClientSession(r, w) as session:
             await session.initialize()
@@ -215,6 +215,16 @@ async def call_mcp_tool(sse_url: str, tool_name: str, arguments: dict) -> str:
                 if hasattr(c, "text"):
                     parts.append(c.text)
             return "\n".join(parts)
+
+
+async def _call_tool_on_session(session, tool_name: str, arguments: dict) -> str:
+    """Call a tool on an already-open MCP session (no reconnect overhead)."""
+    result = await session.call_tool(tool_name, arguments)
+    parts = []
+    for c in result.content:
+        if hasattr(c, "text"):
+            parts.append(c.text)
+    return "\n".join(parts)
 
 
 def mcp_tools_to_openai_schema(tools) -> list:
@@ -649,6 +659,8 @@ class SupernaMCPApp(ctk.CTk):
             self._append_chat("error_text", f"✗ Failed to start server: {e}\n")
             return
 
+        # Stream server stdout (print statements) into the GUI console panel
+        threading.Thread(target=self._read_server_output, daemon=True).start()
         threading.Thread(target=self._wait_for_server, args=(port,), daemon=True).start()
 
     def _wait_for_server(self, port: int):
@@ -693,6 +705,19 @@ class SupernaMCPApp(ctk.CTk):
         self.start_btn.configure(text="■  Stop Server", fg_color=ERROR, hover_color="#b91c1c")
         self._append_chat("muted", "✓ MCP server ready\n")
         gui_log.info("GUI  Server ready")
+
+    def _read_server_output(self):
+        """Background thread: stream server.py stdout into the GUI console panel."""
+        proc = self.server_process
+        if not proc or not proc.stdout:
+            return
+        try:
+            for raw in proc.stdout:
+                line = raw.decode(errors="replace").rstrip()
+                if line:
+                    self.after(0, lambda l=line: self._append_chat("muted", f"[server] {l}\n"))
+        except Exception:
+            pass
 
     def _stop_server(self):
         gui_log.info("GUI  Server stopped by user")
@@ -806,13 +831,17 @@ class SupernaMCPApp(ctk.CTk):
         if not HAS_OPENAI:
             self.after(0, lambda: self._append_chat("error_text", "✗ openai package not installed.\n\n"))
             return
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self._openai_loop_async(prompt))
+        finally:
+            loop.close()
 
+    async def _openai_loop_async(self, prompt: str):
         port = int(self.port_var.get() or 8000)
         sse_url = f"http://127.0.0.1:{port}/sse"
         client = openai.OpenAI(api_key=self.openai_key_var.get().strip())
         model = self.model_var.get().strip() or "gpt-4o"
-
-        loop = asyncio.new_event_loop()
         tools_schema = mcp_tools_to_openai_schema(self.mcp_tools)
         tools_used_total = 0
         first_call = True
@@ -831,66 +860,71 @@ class SupernaMCPApp(ctk.CTk):
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": prompt}
         ]
-
         gui_log.info("LOOP START (openai)  prompt=%s", prompt[:200])
 
-        while True:
-            # Force tool use on the first call so the LLM cannot answer from training data.
-            # After tool results are in, switch to auto so it can give a final answer.
-            if tools_schema:
-                tc_setting = "required" if first_call else "auto"
-            else:
-                tc_setting = openai.NOT_GIVEN
+        # One SSE session for the entire conversation — avoids reconnect
+        # overhead between tool calls that caused the second-tool hang.
+        async with sse_client(sse_url) as (r, w):
+            async with ClientSession(r, w) as session:
+                await session.initialize()
+                gui_log.info("LOOP (openai)  MCP session initialized")
 
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools_schema if tools_schema else openai.NOT_GIVEN,
-                tool_choice=tc_setting,
-            )
-            first_call = False
-            msg = response.choices[0].message
+                while True:
+                    tc_setting = "required" if first_call else "auto"
+                    _msgs = list(messages)
+                    _ts = tools_schema if tools_schema else None
+                    _tc = tc_setting
 
-            if msg.tool_calls:
-                messages.append(msg)
-                gui_log.info("LLM called %d tool(s) this turn", len(msg.tool_calls))
-                for tc in msg.tool_calls:
-                    fn = tc.function.name
-                    args = json.loads(tc.function.arguments or "{}")
-                    tools_used_total += 1
-                    gui_log.info("GUI TOOL CALL  %-38s  args=%s", fn, args)
-                    self.after(0, lambda f=fn, a=args: (
-                        self._append_chat("tool_label", f"\n⚙  TOOL: {f}\n"),
-                        self._append_chat("tool_text", f"   args: {json.dumps(a)}\n")
-                    ))
-                    try:
-                        result = loop.run_until_complete(call_mcp_tool(sse_url, fn, args))
-                        gui_log.info("GUI TOOL OK    %-38s  result=%s", fn, result[:500])
-                    except Exception as e:
-                        gui_log.error("GUI TOOL ERROR %-38s  %s: %s", fn, type(e).__name__, e)
-                        result = f"Error: {e}"
-                    self.after(0, lambda r=result: self._append_chat("tool_text", f"   -> {r[:300]}\n"))
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result
-                    })
-            else:
-                final = msg.content or ""
-                if tools_used_total == 0:
-                    gui_log.warning("WARNING: LLM answered without calling ANY tools — response may be fabricated")
-                    self.after(0, lambda: self._append_chat(
-                        "error_text", "⚠  WARNING: No MCP tools were called — answer may not reflect live data.\n"
-                    ))
-                gui_log.info("LOOP END (openai)  tools_used=%d  response=%s", tools_used_total, final[:1000])
-                ts = datetime.now().strftime("%H:%M:%S")
-                self.after(0, lambda t=ts, f=final: (
-                    self._append_chat("ai_label", f"\n[{t}] EYEGLASS AI\n"),
-                    self._append_chat("ai_text", f"{f}\n\n")
-                ))
-                break
+                    # LLM call is blocking — run in a thread
+                    def _llm_call():
+                        kw = dict(model=model, messages=_msgs)
+                        if _ts:
+                            kw["tools"] = _ts
+                            kw["tool_choice"] = _tc
+                        return client.chat.completions.create(**kw)
 
-        loop.close()
+                    response = await asyncio.to_thread(_llm_call)
+                    first_call = False
+                    msg = response.choices[0].message
+
+                    if msg.tool_calls:
+                        messages.append(msg)
+                        gui_log.info("LLM called %d tool(s) this turn", len(msg.tool_calls))
+                        for tc in msg.tool_calls:
+                            fn = tc.function.name
+                            args = json.loads(tc.function.arguments or "{}")
+                            tools_used_total += 1
+                            gui_log.info("GUI TOOL CALL  %-38s  args=%s", fn, args)
+                            self.after(0, lambda f=fn, a=args: (
+                                self._append_chat("tool_label", f"\n⚙  TOOL: {f}\n"),
+                                self._append_chat("tool_text", f"   args: {json.dumps(a)}\n")
+                            ))
+                            try:
+                                result = await _call_tool_on_session(session, fn, args)
+                                gui_log.info("GUI TOOL OK    %-38s  result=%s", fn, result[:500])
+                            except Exception as e:
+                                gui_log.error("GUI TOOL ERROR %-38s  %s: %s", fn, type(e).__name__, e)
+                                result = f"Error: {e}"
+                            self.after(0, lambda r=result: self._append_chat("tool_text", f"   -> {r[:300]}\n"))
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": result
+                            })
+                    else:
+                        final = msg.content or ""
+                        if tools_used_total == 0:
+                            gui_log.warning("WARNING: LLM answered without calling ANY tools — response may be fabricated")
+                            self.after(0, lambda: self._append_chat(
+                                "error_text", "⚠  WARNING: No MCP tools were called — answer may not reflect live data.\n"
+                            ))
+                        gui_log.info("LOOP END (openai)  tools_used=%d  response=%s", tools_used_total, final[:1000])
+                        ts = datetime.now().strftime("%H:%M:%S")
+                        self.after(0, lambda t=ts, f=final: (
+                            self._append_chat("ai_label", f"\n[{t}] EYEGLASS AI\n"),
+                            self._append_chat("ai_text", f"{f}\n\n")
+                        ))
+                        break
 
     # ── Anthropic agentic loop ────────────────────────────────────────────────
 
@@ -898,13 +932,17 @@ class SupernaMCPApp(ctk.CTk):
         if not HAS_ANTHROPIC:
             self.after(0, lambda: self._append_chat("error_text", "✗ anthropic package not installed.\n\n"))
             return
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self._anthropic_loop_async(prompt))
+        finally:
+            loop.close()
 
+    async def _anthropic_loop_async(self, prompt: str):
         port = int(self.port_var.get() or 8000)
         sse_url = f"http://127.0.0.1:{port}/sse"
         client = anthropic_sdk.Anthropic(api_key=self.anthropic_key_var.get().strip())
         model = self.model_var.get().strip() or "claude-sonnet-4-20250514"
-
-        loop = asyncio.new_event_loop()
         tools_schema = mcp_tools_to_anthropic_schema(self.mcp_tools)
         tools_used_total = 0
         first_call = True
@@ -920,69 +958,73 @@ class SupernaMCPApp(ctk.CTk):
         )
 
         messages = [{"role": "user", "content": prompt}]
-
         gui_log.info("LOOP START (anthropic)  prompt=%s", prompt[:200])
 
-        while True:
-            kwargs = dict(
-                model=model,
-                max_tokens=4096,
-                system=SYSTEM,
-                messages=messages,
-            )
-            if tools_schema:
-                kwargs["tools"] = tools_schema
-                # Force tool use on the first call; auto after tool results are in
-                kwargs["tool_choice"] = {"type": "any"} if first_call else {"type": "auto"}
+        # One SSE session for the entire conversation — avoids reconnect
+        # overhead between tool calls that caused the second-tool hang.
+        async with sse_client(sse_url) as (r, w):
+            async with ClientSession(r, w) as session:
+                await session.initialize()
+                gui_log.info("LOOP (anthropic)  MCP session initialized")
 
-            response = client.messages.create(**kwargs)
-            first_call = False
+                while True:
+                    _msgs = list(messages)
+                    _first = first_call
 
-            tool_uses = [b for b in response.content if b.type == "tool_use"]
-            text_blocks = [b for b in response.content if b.type == "text"]
+                    # LLM call is blocking — run in a thread
+                    def _llm_call():
+                        kw = dict(model=model, max_tokens=4096, system=SYSTEM, messages=_msgs)
+                        if tools_schema:
+                            kw["tools"] = tools_schema
+                            kw["tool_choice"] = {"type": "any"} if _first else {"type": "auto"}
+                        return client.messages.create(**kw)
 
-            if tool_uses:
-                messages.append({"role": "assistant", "content": response.content})
-                gui_log.info("LLM called %d tool(s) this turn", len(tool_uses))
-                tool_results = []
-                for tu in tool_uses:
-                    fn = tu.name
-                    args = tu.input or {}
-                    tools_used_total += 1
-                    gui_log.info("GUI TOOL CALL  %-38s  args=%s", fn, args)
-                    self.after(0, lambda f=fn, a=args: (
-                        self._append_chat("tool_label", f"\n⚙  TOOL: {f}\n"),
-                        self._append_chat("tool_text", f"   args: {json.dumps(a)}\n")
-                    ))
-                    try:
-                        result = loop.run_until_complete(call_mcp_tool(sse_url, fn, args))
-                        gui_log.info("GUI TOOL OK    %-38s  result=%s", fn, result[:500])
-                    except Exception as e:
-                        gui_log.error("GUI TOOL ERROR %-38s  %s: %s", fn, type(e).__name__, e)
-                        result = f"Error: {e}"
-                    self.after(0, lambda r=result: self._append_chat("tool_text", f"   -> {r[:300]}\n"))
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tu.id,
-                        "content": result
-                    })
-                messages.append({"role": "user", "content": tool_results})
-            else:
-                final = " ".join(b.text for b in text_blocks)
-                if tools_used_total == 0:
-                    gui_log.warning("WARNING: LLM answered without calling ANY tools — response may be fabricated")
-                    self.after(0, lambda: self._append_chat(
-                        "error_text", "⚠  WARNING: No MCP tools were called — answer may not reflect live data.\n"
-                    ))
-                gui_log.info("LOOP END (anthropic)  tools_used=%d  response=%s", tools_used_total, final[:1000])
-                ts = datetime.now().strftime("%H:%M:%S")
-                self.after(0, lambda t=ts, f=final: (
-                    self._append_chat("ai_label", f"\n[{t}] EYEGLASS AI\n"),
-                    self._append_chat("ai_text", f"{f}\n\n")
-                ))
-                break
+                    response = await asyncio.to_thread(_llm_call)
+                    first_call = False
 
-        loop.close()
+                    tool_uses = [b for b in response.content if b.type == "tool_use"]
+                    text_blocks = [b for b in response.content if b.type == "text"]
+
+                    if tool_uses:
+                        messages.append({"role": "assistant", "content": response.content})
+                        gui_log.info("LLM called %d tool(s) this turn", len(tool_uses))
+                        tool_results = []
+                        for tu in tool_uses:
+                            fn = tu.name
+                            args = tu.input or {}
+                            tools_used_total += 1
+                            gui_log.info("GUI TOOL CALL  %-38s  args=%s", fn, args)
+                            self.after(0, lambda f=fn, a=args: (
+                                self._append_chat("tool_label", f"\n⚙  TOOL: {f}\n"),
+                                self._append_chat("tool_text", f"   args: {json.dumps(a)}\n")
+                            ))
+                            try:
+                                result = await _call_tool_on_session(session, fn, args)
+                                gui_log.info("GUI TOOL OK    %-38s  result=%s", fn, result[:500])
+                            except Exception as e:
+                                gui_log.error("GUI TOOL ERROR %-38s  %s: %s", fn, type(e).__name__, e)
+                                result = f"Error: {e}"
+                            self.after(0, lambda r=result: self._append_chat("tool_text", f"   -> {r[:300]}\n"))
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tu.id,
+                                "content": result
+                            })
+                        messages.append({"role": "user", "content": tool_results})
+                    else:
+                        final = " ".join(b.text for b in text_blocks)
+                        if tools_used_total == 0:
+                            gui_log.warning("WARNING: LLM answered without calling ANY tools — response may be fabricated")
+                            self.after(0, lambda: self._append_chat(
+                                "error_text", "⚠  WARNING: No MCP tools were called — answer may not reflect live data.\n"
+                            ))
+                        gui_log.info("LOOP END (anthropic)  tools_used=%d  response=%s", tools_used_total, final[:1000])
+                        ts = datetime.now().strftime("%H:%M:%S")
+                        self.after(0, lambda t=ts, f=final: (
+                            self._append_chat("ai_label", f"\n[{t}] EYEGLASS AI\n"),
+                            self._append_chat("ai_text", f"{f}\n\n")
+                        ))
+                        break
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 

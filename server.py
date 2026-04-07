@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.1.1"
+BUILD = "1.1.2"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -77,19 +77,28 @@ def _mcp_tool(func):
     SSE message delivery fully responsive.
 
     ALL work — call, str(), log writes — is done inside _run() in the
-    thread, so nothing heavy ever executes on the event loop thread.
+    thread.  cancellable=True lets anyio release the capacity limiter
+    immediately if the surrounding scope is cancelled (e.g. client
+    disconnect), preventing the limiter from being held while cleanup runs.
     """
     import anyio
 
     @functools.wraps(func)
     async def wrapper(**kwargs):
         def _run():
+            # These prints go to the server console / piped stdout so the
+            # GUI can stream them live.  They run inside the worker thread,
+            # not the event loop.
+            print(f"[TOOL >>] {func.__name__}  {str(kwargs)[:200]}", flush=True)
             log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs)
             try:
                 result = func(**kwargs)
+                snippet = str(result)[:200]
+                print(f"[TOOL <<] {func.__name__}  OK  {snippet}", flush=True)
                 log.info("TOOL OK    %-38s  result=%s", func.__name__, str(result)[:500])
                 return result
             except BaseException as exc:
+                print(f"[TOOL !!] {func.__name__}  {type(exc).__name__}: {exc}", flush=True)
                 if isinstance(exc, BaseExceptionGroup):
                     for i, sub in enumerate(exc.exceptions, 1):
                         log.error("TOOL ERROR %-38s  sub[%d] %s: %s\n%s",
@@ -100,7 +109,12 @@ def _mcp_tool(func):
                               func.__name__, type(exc).__name__, exc, traceback.format_exc())
                 raise
 
-        return await anyio.to_thread.run_sync(_run)
+        # This print runs on the event loop thread — useful to confirm the
+        # event loop is alive when a second tool call arrives.
+        print(f"[TOOL ..] {func.__name__} — dispatching to thread", flush=True)
+        result = await anyio.to_thread.run_sync(_run, cancellable=True)
+        print(f"[TOOL OK] {func.__name__} — thread returned", flush=True)
+        return result
 
     registered = mcp.tool()(wrapper)
     _registered_tools.append(func.__name__)
@@ -819,12 +833,26 @@ if __name__ == "__main__":
     else:
         port = MCP_PORT
 
+    _log_path = Path(os.path.abspath(__file__)).parent / "superna_mcp.log"
+
+    # Console banner — visible in the server's console window and the GUI
+    # console panel (which streams server stdout via subprocess pipe).
+    print("=" * 55, flush=True)
+    print(f"  Superna Eyeglass MCP Server  v{BUILD}", flush=True)
+    print(f"  Transport : {transport}", flush=True)
+    if transport == "sse":
+        print(f"  SSE URL   : http://127.0.0.1:{port}/sse", flush=True)
+    print(f"  Eyeglass  : {EYEGLASS_HOST}  ssl={EYEGLASS_VERIFY_SSL}", flush=True)
+    print(f"  Log file  : {_log_path}", flush=True)
+    print(f"  Tools     : {len(_registered_tools)}", flush=True)
+    print("=" * 55, flush=True)
+
     log.info("=" * 60)
     log.info("Superna MCP Server v%s starting  transport=%s  host=%s  port=%s",
              BUILD, transport, "127.0.0.1" if transport == "sse" else "n/a",
              port if transport == "sse" else "n/a")
     log.info("Eyeglass host: %s  verify_ssl=%s", EYEGLASS_HOST, EYEGLASS_VERIFY_SSL)
-    log.info("Log file: %s", Path(os.path.abspath(__file__)).parent / "superna_mcp.log")
+    log.info("Log file: %s", _log_path)
     log.info("Tools registered: %d  %s", len(_registered_tools), _registered_tools)
 
     try:

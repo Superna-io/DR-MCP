@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.0.4"
+BUILD = "1.0.5"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -114,10 +114,14 @@ def _log_error(method: str, url: str, params, exc: Exception) -> None:
     log.debug(traceback.format_exc())
 
 
+_TIMEOUT = 30  # seconds — prevents blocking the asyncio event loop indefinitely
+
+
 def _get(path: str, params: dict = None) -> dict | list:
     url = f"{BASE_URL}{path}"
     try:
-        resp = requests.get(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
+        resp = requests.get(url, headers=_headers(), params=params,
+                            verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
         _log_response("GET", url, params, resp)
         resp.raise_for_status()
         return resp.json()
@@ -129,7 +133,8 @@ def _get(path: str, params: dict = None) -> dict | list:
 def _post(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
     try:
-        resp = requests.post(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
+        resp = requests.post(url, headers=_headers(), params=params,
+                             verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
         _log_response("POST", url, params, resp)
         resp.raise_for_status()
         return resp.json()
@@ -141,7 +146,8 @@ def _post(path: str, params: dict = None) -> dict:
 def _delete(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
     try:
-        resp = requests.delete(url, headers=_headers(), params=params, json={}, verify=EYEGLASS_VERIFY_SSL)
+        resp = requests.delete(url, headers=_headers(), params=params, json={},
+                               verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
         _log_response("DELETE", url, params, resp)
         resp.raise_for_status()
         return resp.json()
@@ -153,7 +159,8 @@ def _delete(path: str, params: dict = None) -> dict:
 def _put(path: str, params: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
     try:
-        resp = requests.put(url, headers=_headers(), params=params, verify=EYEGLASS_VERIFY_SSL)
+        resp = requests.put(url, headers=_headers(), params=params,
+                            verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
         _log_response("PUT", url, params, resp)
         resp.raise_for_status()
         return resp.json()
@@ -765,7 +772,6 @@ def update_node_configrep_job(
 
 if __name__ == "__main__":
     import sys
-    import asyncio
 
     transport = "stdio" if "--stdio" in sys.argv else "sse"
     # CLI --port overrides JSON config
@@ -780,20 +786,6 @@ if __name__ == "__main__":
              port if transport == "sse" else "n/a")
     log.info("Eyeglass host: %s  verify_ssl=%s", EYEGLASS_HOST, EYEGLASS_VERIFY_SSL)
     log.info("Log file: %s", Path(os.path.abspath(__file__)).parent / "superna_mcp.log")
-
-    def _asyncio_exception_handler(loop, context):
-        exc = context.get("exception")
-        msg = context.get("message", "")
-        if exc:
-            log.error("asyncio unhandled exception: %s: %s\n%s",
-                      type(exc).__name__, exc,
-                      "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
-        else:
-            log.error("asyncio unhandled error: %s  context=%s", msg, context)
-
-    loop = asyncio.new_event_loop()
-    loop.set_exception_handler(_asyncio_exception_handler)
-    asyncio.set_event_loop(loop)
 
     try:
         if transport == "sse":

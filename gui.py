@@ -57,7 +57,7 @@ def _extract_bundled_files():
         if filename == "server.py" or not dst.exists():
             shutil.copy2(src, dst)
 
-BUILD = "1.0.2"
+BUILD = "1.0.3"
 
 import customtkinter as ctk
 from PIL import Image, ImageTk

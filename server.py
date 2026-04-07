@@ -22,10 +22,16 @@ from mcp.server.fastmcp import FastMCP
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# ─── Version ──────────────────────────────────────────────────────────────────
+
+BUILD = "1.0.1"
+
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
 def _setup_logging() -> logging.Logger:
-    log_path = Path(__file__).parent / "superna_mcp.log"
+    # Use abspath so Path(__file__) works even when invoked with a relative path
+    log_path = Path(os.path.abspath(__file__)).parent / "superna_mcp.log"
+    print(f"[superna_mcp] log → {log_path}", flush=True)
     logger = logging.getLogger("superna_mcp")
     logger.setLevel(logging.DEBUG)
     if not logger.handlers:
@@ -747,11 +753,11 @@ if __name__ == "__main__":
         port = MCP_PORT
 
     log.info("=" * 60)
-    log.info("Superna MCP Server starting  transport=%s  host=%s  port=%s",
-             transport, "127.0.0.1" if transport == "sse" else "n/a",
+    log.info("Superna MCP Server v%s starting  transport=%s  host=%s  port=%s",
+             BUILD, transport, "127.0.0.1" if transport == "sse" else "n/a",
              port if transport == "sse" else "n/a")
     log.info("Eyeglass host: %s  verify_ssl=%s", EYEGLASS_HOST, EYEGLASS_VERIFY_SSL)
-    log.info("Log file: %s", Path(__file__).parent / "superna_mcp.log")
+    log.info("Log file: %s", Path(os.path.abspath(__file__)).parent / "superna_mcp.log")
 
     def _asyncio_exception_handler(loop, context):
         exc = context.get("exception")

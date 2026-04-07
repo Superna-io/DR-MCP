@@ -53,6 +53,8 @@ def _extract_bundled_files():
         if src.exists() and not dst.exists():
             shutil.copy2(src, dst)
 
+BUILD = "1.0.1"
+
 import customtkinter as ctk
 from PIL import Image, ImageTk
 import requests
@@ -223,7 +225,7 @@ class SupernaMCPApp(ctk.CTk):
         self.mcp_tools = []
         self._loop = None
 
-        self.title("Superna DR MCP Server and Agentic AI Console")
+        self.title(f"Superna DR MCP Server and Agentic AI Console  v{BUILD}")
         self.geometry("1180x820")
         self.minsize(900, 650)
         self.configure(fg_color=DARK_BG)
@@ -265,6 +267,11 @@ class SupernaMCPApp(ctk.CTk):
         ctk.CTkLabel(
             topbar, text="Superna DR MCP Server and Agentic AI Console",
             font=("Segoe UI Semibold", 13), text_color=TEXT_PRIMARY
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(
+            topbar, text=f"v{BUILD}",
+            font=("Segoe UI", 10), text_color=TEXT_MUTED
         ).pack(side="left", padx=(0, 20))
 
         self.status_dot = ctk.CTkLabel(topbar, text="●", font=("Segoe UI", 16), text_color=ERROR)

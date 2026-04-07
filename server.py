@@ -31,7 +31,7 @@ BUILD = "1.0.2"
 def _setup_logging() -> logging.Logger:
     # Use abspath so Path(__file__) works even when invoked with a relative path
     log_path = Path(os.path.abspath(__file__)).parent / "superna_mcp.log"
-    print(f"[superna_mcp] log → {log_path}", flush=True)
+    print(f"[superna_mcp] log -> {log_path}", flush=True)
     logger = logging.getLogger("superna_mcp")
     logger.setLevel(logging.DEBUG)
     if not logger.handlers:

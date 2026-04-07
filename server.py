@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.1.3"
+BUILD = "1.1.4"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -93,9 +93,12 @@ def _mcp_tool(func):
             log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs)
             try:
                 result = func(**kwargs)
-                snippet = str(result)[:200]
+                print(f"[TOOL RES] {func.__name__} returned", flush=True)
+                # Use _safe_snippet — never calls str() on the full object,
+                # which can be very slow for large SyncIQ readiness payloads.
+                snippet = _safe_snippet(result, 300)
                 print(f"[TOOL <<] {func.__name__}  OK  {snippet}", flush=True)
-                log.info("TOOL OK    %-38s  result=%s", func.__name__, str(result)[:500])
+                log.info("TOOL OK    %-38s  result=%s", func.__name__, snippet)
                 return result
             except BaseException as exc:
                 print(f"[TOOL !!] {func.__name__}  {type(exc).__name__}: {exc}", flush=True)
@@ -154,10 +157,31 @@ def _headers() -> dict:
     return {"api_key": EYEGLASS_API_TOKEN, "Content-Type": "application/json"}
 
 
-def _log_response(method: str, url: str, params, resp) -> None:
-    log.info("%-6s %s  params=%s  → HTTP %s", method, url, params, resp.status_code)
+def _safe_snippet(obj, max_chars: int = 300) -> str:
+    """Return a short, safe string representation — never calls str() on the full object."""
     try:
-        log.debug("       response body: %s", resp.text[:2000])
+        if isinstance(obj, list):
+            return f"[list len={len(obj)}] first={str(obj[0])[:100] if obj else '(empty)'}"
+        if isinstance(obj, dict):
+            keys = list(obj.keys())[:6]
+            return f"{{dict keys={keys}}}"
+        return str(obj)[:max_chars]
+    except Exception:
+        return "<repr failed>"
+
+
+def _log_response(method: str, url: str, params, resp) -> None:
+    body_bytes = len(resp.content)
+    log.info("%-6s %s  params=%s  -> HTTP %s  body=%d bytes",
+             method, url, params, resp.status_code, body_bytes)
+    print(f"[HTTP BDY ] body={body_bytes} bytes", flush=True)
+    try:
+        # Only log the body text for small responses — large responses
+        # keep the debug line brief to avoid slow str operations on the log thread.
+        if body_bytes <= 8000:
+            log.debug("       response body: %s", resp.text[:2000])
+        else:
+            log.debug("       response body: <large %d bytes — truncated>", body_bytes)
     except Exception:
         pass
 
@@ -178,8 +202,12 @@ def _get(path: str, params: dict = None) -> dict | list:
                             verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
         print(f"[HTTP GOT ] {url}  {resp.status_code}", flush=True)
         _log_response("GET", url, params, resp)
+        print(f"[HTTP LOG ] logged", flush=True)
         resp.raise_for_status()
-        return resp.json()
+        print(f"[HTTP STS ] status ok", flush=True)
+        data = resp.json()
+        print(f"[HTTP JSN ] json parsed  type={type(data).__name__}", flush=True)
+        return data
     except Exception as exc:
         print(f"[HTTP ERR ] GET {url}  {type(exc).__name__}: {exc}", flush=True)
         _log_error("GET", url, params, exc)

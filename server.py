@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.0.9"
+BUILD = "1.1.0"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -70,18 +70,22 @@ _registered_tools: list[str] = []
 def _mcp_tool(func):
     """
     Drop-in replacement for @mcp.tool().
-    Logs every tool call, its result, and any exception — including those
-    later wrapped by FastMCP in an ExceptionGroup/TaskGroup error.
+
+    Makes the wrapper async so FastMCP awaits it instead of calling it
+    directly in the event loop.  The actual (blocking) tool function runs
+    in asyncio.to_thread so HTTP requests and file I/O never block the
+    event loop, preventing GUI hangs on slow Eyeglass endpoints.
     """
+    import asyncio as _asyncio
+
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs or args)
+    async def wrapper(**kwargs):
+        log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs)
         try:
-            result = func(*args, **kwargs)
+            result = await _asyncio.to_thread(lambda: func(**kwargs))
             log.info("TOOL OK    %-38s  result=%s", func.__name__, str(result)[:500])
             return result
         except BaseException as exc:
-            # Unwrap ExceptionGroup (Python 3.11+ TaskGroup errors) to log each sub-exception
             if isinstance(exc, BaseExceptionGroup):
                 for i, sub in enumerate(exc.exceptions, 1):
                     log.error("TOOL ERROR %-38s  sub[%d] %s: %s\n%s",
@@ -91,10 +95,11 @@ def _mcp_tool(func):
                 log.error("TOOL ERROR %-38s  %s: %s\n%s",
                           func.__name__, type(exc).__name__, exc, traceback.format_exc())
             raise
-    result = mcp.tool()(wrapper)
+
+    registered = mcp.tool()(wrapper)
     _registered_tools.append(func.__name__)
     log.debug("Registered tool [%d]: %s", len(_registered_tools), func.__name__)
-    return result
+    return registered
 
 
 # ─── Configuration ────────────────────────────────────────────────────────────

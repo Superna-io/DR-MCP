@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.0.5"
+BUILD = "1.0.6"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -33,17 +33,31 @@ def _setup_logging() -> logging.Logger:
     # Use abspath so Path(__file__) works even when invoked with a relative path
     log_path = Path(os.path.abspath(__file__)).parent / "superna_mcp.log"
     print(f"[superna_mcp] log -> {log_path}", flush=True)
+
+    fmt = logging.Formatter(
+        "%(asctime)s  %(levelname)-8s  [%(name)s]  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+
+    # Our own logger
     logger = logging.getLogger("superna_mcp")
     logger.setLevel(logging.DEBUG)
     if not logger.handlers:
-        fh = logging.FileHandler(log_path, encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fmt = logging.Formatter(
-            "%(asctime)s  %(levelname)-8s  %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        fh.setFormatter(fmt)
         logger.addHandler(fh)
+
+    # Capture FastMCP / uvicorn / asyncio internal logs into the same file
+    for lib_name in ("mcp", "uvicorn", "uvicorn.error", "uvicorn.access",
+                     "fastapi", "starlette", "asyncio"):
+        lib_log = logging.getLogger(lib_name)
+        lib_log.setLevel(logging.DEBUG)
+        # Only add if not already attached (handles server restarts)
+        if not any(isinstance(h, logging.FileHandler) and h.baseFilename == str(log_path)
+                   for h in lib_log.handlers):
+            lib_log.addHandler(fh)
+
     return logger
 
 log = _setup_logging()
@@ -51,9 +65,9 @@ log = _setup_logging()
 
 def _mcp_tool(func):
     """
-    Drop-in replacement for @_mcp_tool.
-    Logs every tool call, its result, and any exception (including those
-    later wrapped by FastMCP in an ExceptionGroup/TaskGroup error).
+    Drop-in replacement for @mcp.tool().
+    Logs every tool call, its result, and any exception — including those
+    later wrapped by FastMCP in an ExceptionGroup/TaskGroup error.
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -62,9 +76,16 @@ def _mcp_tool(func):
             result = func(*args, **kwargs)
             log.info("TOOL OK    %-38s  result=%s", func.__name__, str(result)[:500])
             return result
-        except Exception as exc:
-            log.error("TOOL ERROR %-38s  %s: %s\n%s",
-                      func.__name__, type(exc).__name__, exc, traceback.format_exc())
+        except BaseException as exc:
+            # Unwrap ExceptionGroup (Python 3.11+ TaskGroup errors) to log each sub-exception
+            if isinstance(exc, BaseExceptionGroup):
+                for i, sub in enumerate(exc.exceptions, 1):
+                    log.error("TOOL ERROR %-38s  sub[%d] %s: %s\n%s",
+                              func.__name__, i, type(sub).__name__, sub,
+                              "".join(traceback.format_exception(type(sub), sub, sub.__traceback__)))
+            else:
+                log.error("TOOL ERROR %-38s  %s: %s\n%s",
+                          func.__name__, type(exc).__name__, exc, traceback.format_exc())
             raise
     return mcp.tool()(wrapper)
 

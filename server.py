@@ -25,7 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.1.0"
+BUILD = "1.1.1"
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -71,30 +71,36 @@ def _mcp_tool(func):
     """
     Drop-in replacement for @mcp.tool().
 
-    Makes the wrapper async so FastMCP awaits it instead of calling it
-    directly in the event loop.  The actual (blocking) tool function runs
-    in asyncio.to_thread so HTTP requests and file I/O never block the
-    event loop, preventing GUI hangs on slow Eyeglass endpoints.
+    Runs the (blocking) tool function in an anyio worker thread so HTTP
+    requests, JSON parsing, str() conversion, and file logging never block
+    the event loop.  The event loop only awaits the thread future, keeping
+    SSE message delivery fully responsive.
+
+    ALL work — call, str(), log writes — is done inside _run() in the
+    thread, so nothing heavy ever executes on the event loop thread.
     """
-    import asyncio as _asyncio
+    import anyio
 
     @functools.wraps(func)
     async def wrapper(**kwargs):
-        log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs)
-        try:
-            result = await _asyncio.to_thread(lambda: func(**kwargs))
-            log.info("TOOL OK    %-38s  result=%s", func.__name__, str(result)[:500])
-            return result
-        except BaseException as exc:
-            if isinstance(exc, BaseExceptionGroup):
-                for i, sub in enumerate(exc.exceptions, 1):
-                    log.error("TOOL ERROR %-38s  sub[%d] %s: %s\n%s",
-                              func.__name__, i, type(sub).__name__, sub,
-                              "".join(traceback.format_exception(type(sub), sub, sub.__traceback__)))
-            else:
-                log.error("TOOL ERROR %-38s  %s: %s\n%s",
-                          func.__name__, type(exc).__name__, exc, traceback.format_exc())
-            raise
+        def _run():
+            log.info("TOOL CALL  %-38s  args=%s", func.__name__, kwargs)
+            try:
+                result = func(**kwargs)
+                log.info("TOOL OK    %-38s  result=%s", func.__name__, str(result)[:500])
+                return result
+            except BaseException as exc:
+                if isinstance(exc, BaseExceptionGroup):
+                    for i, sub in enumerate(exc.exceptions, 1):
+                        log.error("TOOL ERROR %-38s  sub[%d] %s: %s\n%s",
+                                  func.__name__, i, type(sub).__name__, sub,
+                                  "".join(traceback.format_exception(type(sub), sub, sub.__traceback__)))
+                else:
+                    log.error("TOOL ERROR %-38s  %s: %s\n%s",
+                              func.__name__, type(exc).__name__, exc, traceback.format_exc())
+                raise
+
+        return await anyio.to_thread.run_sync(_run)
 
     registered = mcp.tool()(wrapper)
     _registered_tools.append(func.__name__)

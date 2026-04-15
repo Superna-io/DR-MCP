@@ -62,11 +62,13 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/App
 
 👉 **[Download SupernaMCP-GUI.exe from Releases](../../releases/latest)**
 
-1. Download `SupernaMCP-GUI.exe`
-2. Place `superna_mcp.json` in the same folder
-3. Double-click the exe — no Python install needed
-4. Fill in your Eyeglass host, API token, and OpenAI or Anthropic key
-5. Click **Start Server**, then type your question
+1. Install Python 3.10+ and ensure it is in your PATH (`python` or `python3` must be runnable from a terminal)
+2. Download `SupernaMCP-GUI.exe`
+3. Place `superna_mcp.json` in the same folder
+4. Double-click the exe
+5. Click **Install Dependencies** on first run to install the required Python packages
+6. Fill in your Eyeglass host, API token, and OpenAI or Anthropic key
+7. Click **Start Server**, then type your question
 
 The GUI auto-starts the MCP server, connects to your Eyeglass appliance, and runs a full agentic tool-call loop with your chosen LLM.
 

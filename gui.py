@@ -853,7 +853,10 @@ class SupernaMCPApp(ctk.CTk):
             "1. ALWAYS call the appropriate MCP tool(s) before answering any question about system state.\n"
             "2. NEVER answer from training knowledge, guess, estimate, or fabricate any data.\n"
             "3. If a tool returns an error, report the exact error — do not substitute invented data.\n"
-            "4. Every factual claim in your answer must come directly from a tool result in this conversation."
+            "4. Every factual claim in your answer must come directly from a tool result in this conversation.\n"
+            "5. FAILOVER SAFETY — before calling any tool that performs a failover, lockout, isolation, or destructive action, "
+            "you MUST ask the user: 'Are you sure you want to proceed? Type yes to confirm.' "
+            "Do not call the tool until the user explicitly replies with 'yes'."
         )
 
         messages = [
@@ -954,7 +957,10 @@ class SupernaMCPApp(ctk.CTk):
             "1. ALWAYS call the appropriate MCP tool(s) before answering any question about system state.\n"
             "2. NEVER answer from training knowledge, guess, estimate, or fabricate any data.\n"
             "3. If a tool returns an error, report the exact error — do not substitute invented data.\n"
-            "4. Every factual claim in your answer must come directly from a tool result in this conversation."
+            "4. Every factual claim in your answer must come directly from a tool result in this conversation.\n"
+            "5. FAILOVER SAFETY — before calling any tool that performs a failover, lockout, isolation, or destructive action, "
+            "you MUST ask the user: 'Are you sure you want to proceed? Type yes to confirm.' "
+            "Do not call the tool until the user explicitly replies with 'yes'."
         )
 
         messages = [{"role": "user", "content": prompt}]

@@ -28,7 +28,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ─── Version ──────────────────────────────────────────────────────────────────
 
-BUILD = "1.1.8"
+BUILD = "1.3.0"
 
 
 # ─── Synchronous trace ────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ def _setup_logging() -> logging.Logger:
 
     # Capture FastMCP / uvicorn error logs into the same file at WARNING+.
     # Do NOT set asyncio or uvicorn.access to DEBUG — synchronous writes
-    # inside the event loop block it from flushing SSE TCP sends.
+    # inside the event loop block it from flushing HTTP TCP sends.
     for lib_name in ("mcp", "uvicorn", "uvicorn.error", "fastapi", "starlette"):
         lib_log = logging.getLogger(lib_name)
         lib_log.setLevel(logging.WARNING)
@@ -144,22 +144,34 @@ log = _setup_logging()
 
 
 _registered_tools: list[str] = []
+_tool_catalog: list[dict] = []   # every tool incl. disabled: {name, category, enabled}
 
 
-def _mcp_tool(func):
+def _mcp_tool(func=None, *, category="DR Tools"):
     """
     Drop-in replacement for @mcp.tool().
+
+    Usable as @_mcp_tool (category defaults to "DR Tools") or as
+    @_mcp_tool(category="Data Security Tools").
 
     Runs the (blocking) tool function in an anyio worker thread so HTTP
     requests, JSON parsing, str() conversion, and file logging never block
     the event loop.  The event loop only awaits the thread future, keeping
-    SSE message delivery fully responsive.
+    HTTP (streamable-http / SSE) message delivery fully responsive.
 
     ALL work — call, str(), log writes — is done inside _run() in the
     thread.  cancellable=True lets anyio release the capacity limiter
     immediately if the surrounding scope is cancelled (e.g. client
     disconnect), preventing the limiter from being held while cleanup runs.
+
+    Tools whose name is in DISABLED_TOOLS (from superna_mcp.json) are recorded
+    in the catalog but NOT registered with the MCP server — invisible to the
+    LLM until re-enabled and the server restarted.
     """
+    if func is None:
+        # Called with arguments: @_mcp_tool(category="...")
+        return functools.partial(_mcp_tool, category=category)
+
     import anyio
 
     @functools.wraps(func)
@@ -208,9 +220,14 @@ def _mcp_tool(func):
         _nb_print(f"[TOOL OK] {func.__name__} — thread returned")
         return result
 
+    enabled = func.__name__ not in DISABLED_TOOLS
+    _tool_catalog.append({"name": func.__name__, "category": category, "enabled": enabled})
+    if not enabled:
+        log.info("Tool DISABLED (not registered): %s  [%s]", func.__name__, category)
+        return func
     registered = mcp.tool()(wrapper)
     _registered_tools.append(func.__name__)
-    log.debug("Registered tool [%d]: %s", len(_registered_tools), func.__name__)
+    log.debug("Registered tool [%d]: %s  [%s]", len(_registered_tools), func.__name__, category)
     return registered
 
 
@@ -237,6 +254,10 @@ EYEGLASS_VERIFY_SSL = (
     else os.environ.get("EYEGLASS_VERIFY_SSL", "false").lower() == "true"
 )
 MCP_PORT = int(_cfg.get("mcp_port") or os.environ.get("MCP_PORT", 8000))
+
+# Tools listed here (by function name) are recorded in the catalog but NOT
+# registered with the MCP server.  The GUI "Manage Tools" panel writes this list.
+DISABLED_TOOLS = set(_cfg.get("disabled_tools") or [])
 
 BASE_URL = f"https://{EYEGLASS_HOST}/sera"
 
@@ -314,11 +335,11 @@ def _get(path: str, params: dict = None) -> dict | list:
         raise
 
 
-def _post(path: str, params: dict = None) -> dict:
+def _post(path: str, params: dict = None, json_body: dict = None) -> dict:
     url = f"{BASE_URL}{path}"
     _nb_print(f"[HTTP POST] {url}")
     try:
-        resp = requests.post(url, headers=_headers(), params=params,
+        resp = requests.post(url, headers=_headers(), params=params, json=json_body,
                              verify=EYEGLASS_VERIFY_SSL, timeout=_TIMEOUT)
         _nb_print(f"[HTTP GOT ] {url}  {resp.status_code}")
         _log_response("POST", url, params, resp)
@@ -960,13 +981,345 @@ def update_node_configrep_job(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# DATA SECURITY TOOLS  (Ransomware Defender · Security Events · Whitelist ·
+#                       Airgap/Cyber Vault · User share exposure)
+# ══════════════════════════════════════════════════════════════════════════════
+# Tagged category="Data Security Tools" so they can be toggled independently of
+# the DR tools from the GUI "Manage Tools" panel.  Machine-to-machine callback
+# endpoints (vault heartbeats/uploads) are intentionally NOT exposed.
+
+# ─── Ransomware Defender ───────────────────────────────────────────────────────
+
+@_mcp_tool(category="Data Security Tools")
+def rsw_has_active_events() -> dict:
+    """Return whether there are active ransomware events in Eyeglass (true/false)."""
+    return _get("/v2/ransomware/hasactiveevents")
+
+
+@_mcp_tool(category="Data Security Tools")
+def list_critical_path_snapshots(state: Optional[str] = None) -> list:
+    """
+    List recent critical-path snapshot jobs.
+
+    Args:
+        state: Filter by job state: 'all' | 'running' | 'finished'. Default: all.
+    """
+    return _get("/v2/ransomware/criticalpaths", params=_clean({"state": state}))
+
+
+@_mcp_tool(category="Data Security Tools")
+def snapshot_critical_paths() -> dict:
+    """
+    Take a snapshot of all critical paths (starts a snapshot job).
+
+    Returns:
+        {'id': '<job_id>'} — track with get_critical_path_snapshot.
+    """
+    return _post("/v2/ransomware/criticalpaths")
+
+
+@_mcp_tool(category="Data Security Tools")
+def get_critical_path_snapshot(job_id: str) -> dict:
+    """
+    Retrieve a recently run critical-path snapshot job.
+
+    Args:
+        job_id: ID of the snapshot job to retrieve.
+    """
+    return _get(f"/v2/ransomware/criticalpaths/{job_id}")
+
+
+@_mcp_tool(category="Data Security Tools")
+def list_group_users(
+    group_sid: str,
+    current_page: Optional[int] = None,
+    page_size: Optional[int] = None,
+) -> dict:
+    """
+    Retrieve all Active Directory users in a given group.
+
+    Args:
+        group_sid:    SID of the AD group.
+        current_page: Page number (optional paging).
+        page_size:    Results per page (optional paging).
+    """
+    return _get("/v2/ransomware/groupusers", params=_clean({
+        "groupSID": group_sid,
+        "currentPage": current_page,
+        "pageSize": page_size,
+    }))
+
+
+@_mcp_tool(category="Data Security Tools")
+def lockout_user(user: str) -> dict:
+    """
+    Create a ransomware event and LOCK OUT a user (immediately denies their access).
+
+    ⚠ DESTRUCTIVE / high-impact — confirm with the operator ('type yes to
+    confirm') before calling.
+
+    Args:
+        user: SID or username of the user to lock out.
+    """
+    return _post(f"/v2/ransomware/lockout/{user}")
+
+
+@_mcp_tool(category="Data Security Tools")
+def unlock_user(user: str) -> dict:
+    """
+    Unlock a previously locked-out user (restores their access).
+
+    ⚠ Security-sensitive — confirm with the operator before calling.
+
+    Args:
+        user: Username of the user to unlock.
+    """
+    return _post(f"/v2/ransomware/unlock/{user}")
+
+
+# ─── Security Events ───────────────────────────────────────────────────────────
+
+@_mcp_tool(category="Data Security Tools")
+def list_security_events(event_type: str = "all") -> list:
+    """
+    List security events.
+
+    Args:
+        event_type: Event types to include: 'all' | 'rsw' (ransomware) | 'ea'.
+                    Required by the API; defaults to 'all'.
+    """
+    return _get("/v1/securityevents", params={"type": event_type})
+
+
+@_mcp_tool(category="Data Security Tools")
+def list_security_user_activity(userinitiating: str, ticket: str) -> list:
+    """
+    List security events by user activity. Both arguments are required by the API.
+
+    Args:
+        userinitiating: The user who initiated the event.
+        ticket:         External ticket number to associate with the lookup.
+    """
+    return _get("/v1/securityevents-useractivity", params={
+        "userinitiating": userinitiating,
+        "ticket": ticket,
+    })
+
+
+# ─── Ransomware Whitelist ──────────────────────────────────────────────────────
+
+@_mcp_tool(category="Data Security Tools")
+def list_ransomware_whitelist() -> list:
+    """Get all Ransomware Defender whitelist settings."""
+    return _get("/v1/ransomware/whitelist")
+
+
+@_mcp_tool(category="Data Security Tools")
+def list_ransomware_whitelist_changes(newer_than: int) -> list:
+    """
+    Get whitelist settings that have changed since a given time.
+
+    Args:
+        newer_than: Epoch timestamp — return whitelist entries changed after this.
+    """
+    return _get(f"/v1/ransomware/whitelist/{newer_than}")
+
+
+# ─── Airgap / Cyber Vault ──────────────────────────────────────────────────────
+
+@_mcp_tool(category="Data Security Tools")
+def list_ecs_airgap_jobs(
+    order: Optional[str] = None,
+    order_by: Optional[str] = None,
+    current_page: Optional[int] = None,
+    page_size: Optional[int] = None,
+) -> list:
+    """
+    Get all ECS airgap jobs.
+
+    Args:
+        order:        Sort order: 'ASC' | 'DESC'.
+        order_by:     Sort field: name|createtime|vdcID|sourceBucket|sourcepath|cron.
+        current_page: Page number (optional paging).
+        page_size:    Results per page (optional paging).
+    """
+    return _get("/v2/airgap/ecs", params=_clean({
+        "order": order, "orderBy": order_by,
+        "currentPage": current_page, "pageSize": page_size,
+    }))
+
+
+@_mcp_tool(category="Data Security Tools")
+def update_ecs_airgap_status(
+    name: str,
+    airgap_state: str,
+    statusinfo: Optional[str] = None,
+) -> dict:
+    """
+    Update an ECS airgap job's state — e.g. OPEN or CLOSE the air-gap route.
+
+    ⚠ DESTRUCTIVE / high-impact — changing the air-gap route alters the vault's
+    network isolation. Confirm with the operator ('type yes to confirm') first.
+
+    Args:
+        name:         Name of the ECS airgap job (from list_ecs_airgap_jobs).
+        airgap_state: One of 'AirGapRouteClosed', 'AirGapRouteOpen',
+                      'ActiveEventDisabled'.
+        statusinfo:   Optional extra status/notes string.
+    """
+    return _post(
+        "/v2/airgap/ecs",
+        params={"name": name},
+        json_body=_clean({"airgapState": airgap_state, "statusinfo": statusinfo}),
+    )
+
+
+@_mcp_tool(category="Data Security Tools")
+def list_ecssync_schedules(eva_id: str) -> list:
+    """
+    Get all ECS-sync airgap job schedules for a vault agent. Required by the API.
+
+    Args:
+        eva_id: Vault agent ID (evaID).
+    """
+    return _get("/v2/airgap/ecssyncschedules", params={"evaID": eva_id})
+
+
+@_mcp_tool(category="Data Security Tools")
+def get_invault_schedule() -> dict:
+    """Get the airgap in-vault schedule status."""
+    return _get("/v2/airgap/invaultschedule")
+
+
+@_mcp_tool(category="Data Security Tools")
+def get_airgap_job_history(jobname: str, count: Optional[int] = None) -> list:
+    """
+    Retrieve the run history for a given airgap job.
+
+    Args:
+        jobname: Name of the airgap job.
+        count:   Max number of historical runs to retrieve.
+    """
+    return _get("/v2/airgap/jobhistory", params=_clean({"jobname": jobname, "count": count}))
+
+
+@_mcp_tool(category="Data Security Tools")
+def list_airgap_jobs(eva_id: str) -> list:
+    """
+    Get all airgap jobs for a vault agent. Required by the API.
+
+    Args:
+        eva_id: Vault agent ID (evaID).
+    """
+    return _get("/v2/jobs/airgap", params={"evaID": eva_id})
+
+
+@_mcp_tool(category="Data Security Tools")
+def get_airgap_job(job_id: str, jobname: str) -> dict:
+    """
+    Retrieve a specific recently run airgap job. Both arguments are required.
+
+    Args:
+        job_id:  ID of the airgap job to retrieve.
+        jobname: Name of the airgap job (from list_airgap_jobs).
+    """
+    return _get(f"/v2/jobs/airgap/{job_id}", params={"jobname": jobname})
+
+
+@_mcp_tool(category="Data Security Tools")
+def start_airgap_job(jobname: str) -> dict:
+    """
+    Start an airgap job.
+
+    ⚠ Operational / high-impact — this runs an air-gap sync/vault operation.
+    Confirm with the operator ('type yes to confirm') before calling.
+
+    Args:
+        jobname: Name of the airgap job to start (from list_airgap_jobs).
+    """
+    return _post("/v2/jobs/airgap", params={"jobname": jobname})
+
+
+@_mcp_tool(category="Data Security Tools")
+def list_airgap_access_requests(eva_id: str) -> list:
+    """
+    Get Eyeglass access requests to the vault for a vault agent. Required by the API.
+
+    Args:
+        eva_id: Vault agent ID (evaID).
+    """
+    return _get("/v2/jobs/airgap/accessrequest", params={"evaID": eva_id})
+
+
+# ─── Users / Share Exposure ────────────────────────────────────────────────────
+
+@_mcp_tool(category="Data Security Tools")
+def list_users(
+    uid: Optional[str] = None,
+    sid: Optional[str] = None,
+    upn: Optional[str] = None,
+    dlln: Optional[str] = None,
+) -> list:
+    """
+    Get all users, optionally filtered.
+
+    Args:
+        uid:  Filter by user ID.
+        sid:  Filter by security identifier (SID).
+        upn:  Filter by user principal name.
+        dlln: Filter by distinguished name.
+    """
+    return _get("/v1/users", params=_clean({"uid": uid, "sid": sid, "upn": upn, "dlln": dlln}))
+
+
+@_mcp_tool(category="Data Security Tools")
+def list_user_smb_shares(
+    uid: Optional[str] = None,
+    sid: Optional[str] = None,
+    upn: Optional[str] = None,
+    dlln: Optional[str] = None,
+) -> list:
+    """
+    Get the SMB shares accessible by a user (share-exposure visibility).
+
+    Args:
+        uid:  Filter by user ID.
+        sid:  Filter by security identifier (SID).
+        upn:  Filter by user principal name.
+        dlln: Filter by distinguished name.
+    """
+    return _get("/v1/users/smb-share",
+                params=_clean({"uid": uid, "sid": sid, "upn": upn, "dlln": dlln}))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys
 
-    transport = "stdio" if "--stdio" in sys.argv else "sse"
+    # --dump-catalog: write the tool catalog (all tools incl. disabled) and exit
+    # without starting the server.  The GUI uses this to populate its
+    # "Manage Tools" panel before the server has ever been started.
+    if "--dump-catalog" in sys.argv:
+        _catalog_path = Path(os.path.abspath(__file__)).parent / "superna_tools_catalog.json"
+        with open(_catalog_path, "w", encoding="utf-8") as f:
+            json.dump({"build": BUILD, "tools": _tool_catalog}, f, indent=2)
+        print(f"Wrote catalog: {_catalog_path}  ({len(_tool_catalog)} tools)")
+        sys.exit(0)
+
+    # Transport selection:
+    #   (default)   streamable-http  — modern MCP HTTP transport, endpoint /mcp
+    #   --sse       sse              — legacy Server-Sent Events transport, /sse
+    #   --stdio     stdio            — for Claude Desktop / local subprocess
+    if "--stdio" in sys.argv:
+        transport = "stdio"
+    elif "--sse" in sys.argv:
+        transport = "sse"
+    else:
+        transport = "streamable-http"
+
     # CLI --port overrides JSON config
     if "--port" in sys.argv:
         port = int(sys.argv[sys.argv.index("--port") + 1])
@@ -975,33 +1328,50 @@ if __name__ == "__main__":
 
     _log_path = Path(os.path.abspath(__file__)).parent / "superna_mcp.log"
 
+    # Network transports expose an HTTP endpoint; stdio does not.
+    _endpoint = {"streamable-http": "/mcp", "sse": "/sse"}.get(transport)
+    _is_net = transport != "stdio"
+
     # Console banner — visible in the server's console window and the GUI
     # console panel (which streams server stdout via subprocess pipe).
     _nb_print("=" * 55)
     _nb_print(f"  Superna Eyeglass MCP Server  v{BUILD}")
     _nb_print(f"  Transport : {transport}")
-    if transport == "sse":
-        _nb_print(f"  SSE URL   : http://127.0.0.1:{port}/sse")
+    if _is_net:
+        _nb_print(f"  URL       : http://127.0.0.1:{port}{_endpoint}")
     _nb_print(f"  Eyeglass  : {EYEGLASS_HOST}  ssl={EYEGLASS_VERIFY_SSL}")
     _nb_print(f"  Log file  : {_log_path}")
-    _nb_print(f"  Tools     : {len(_registered_tools)}")
+    _nb_print(f"  Tools     : {len(_registered_tools)} enabled / {len(_tool_catalog)} total")
+    if DISABLED_TOOLS:
+        _nb_print(f"  Disabled  : {sorted(DISABLED_TOOLS)}")
     _nb_print("=" * 55)
+
+    # Write the tool catalog (ALL tools incl. disabled) so the GUI can render its
+    # "Manage Tools" panel without needing a live MCP connection.
+    try:
+        _catalog_path = Path(os.path.abspath(__file__)).parent / "superna_tools_catalog.json"
+        with open(_catalog_path, "w", encoding="utf-8") as f:
+            json.dump({"build": BUILD, "tools": _tool_catalog}, f, indent=2)
+        _nb_print(f"  Catalog   : {_catalog_path}")
+    except Exception as exc:
+        log.warning("Could not write tool catalog: %s", exc)
 
     log.info("=" * 60)
     log.info("Superna MCP Server v%s starting  transport=%s  host=%s  port=%s",
-             BUILD, transport, "127.0.0.1" if transport == "sse" else "n/a",
-             port if transport == "sse" else "n/a")
+             BUILD, transport, "127.0.0.1" if _is_net else "n/a",
+             port if _is_net else "n/a")
     log.info("Eyeglass host: %s  verify_ssl=%s", EYEGLASS_HOST, EYEGLASS_VERIFY_SSL)
     log.info("Log file: %s", _log_path)
-    log.info("Tools registered: %d  %s", len(_registered_tools), _registered_tools)
+    log.info("Tools: %d enabled / %d total  disabled=%s",
+             len(_registered_tools), len(_tool_catalog), sorted(DISABLED_TOOLS))
 
     try:
-        if transport == "sse":
+        if transport == "stdio":
+            mcp.run(transport="stdio")
+        else:
             mcp.settings.host = "127.0.0.1"
             mcp.settings.port = port
-            mcp.run(transport="sse")
-        else:
-            mcp.run(transport="stdio")
+            mcp.run(transport=transport)
     except Exception as exc:
         log.critical("Server crashed: %s\n%s", exc, traceback.format_exc())
         raise

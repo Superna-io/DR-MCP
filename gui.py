@@ -115,7 +115,7 @@ except ImportError:
     HAS_ANTHROPIC = False
 
 try:
-    from mcp.client.sse import sse_client
+    from mcp.client.streamable_http import streamablehttp_client
     from mcp import ClientSession
     HAS_MCP = True
 except ImportError:
@@ -135,7 +135,7 @@ CONFIG_FILE = _config_file()
 DEFAULT_CONFIG = {
     "mcpServers": {
         "eyeglass-failover": {
-            "url": "http://127.0.0.1:8000/sse"
+            "url": "http://127.0.0.1:8000/mcp"
         }
     },
     "eyeglass_host": "igls",
@@ -144,7 +144,8 @@ DEFAULT_CONFIG = {
     "mcp_port": 8000,
     "server_py_path": str(Path(sys.executable).parent / "server.py") if _is_frozen() else "server.py",
     "openai_api_key": "",
-    "anthropic_api_key": ""
+    "anthropic_api_key": "",
+    "disabled_tools": []
 }
 
 
@@ -195,18 +196,19 @@ FONT_HEADING = ("Segoe UI Semibold", 11)
 
 # ─── MCP Tool Discovery & Agentic Loop ────────────────────────────────────────
 
-async def get_mcp_tools(sse_url: str) -> list:
+async def get_mcp_tools(mcp_url: str) -> list:
     """Fetch tool definitions from the running MCP server."""
-    async with sse_client(sse_url) as (r, w):
+    # streamablehttp_client yields a 3-tuple (read, write, get_session_id).
+    async with streamablehttp_client(mcp_url) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
             result = await session.list_tools()
             return result.tools
 
 
-async def call_mcp_tool(sse_url: str, tool_name: str, arguments: dict) -> str:
+async def call_mcp_tool(mcp_url: str, tool_name: str, arguments: dict) -> str:
     """Call a single MCP tool and return the text result (opens its own session)."""
-    async with sse_client(sse_url) as (r, w):
+    async with streamablehttp_client(mcp_url) as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
             result = await session.call_tool(tool_name, arguments)
@@ -464,6 +466,13 @@ class SupernaMCPApp(ctk.CTk):
             command=self._save_config
         ).pack(fill="x", padx=14, pady=(0, 4))
 
+        # Manage tools (enable/disable, grouped by category)
+        ctk.CTkButton(
+            parent, text="🧩  Manage Tools", fg_color=BORDER, hover_color=ACCENT2,
+            text_color=TEXT_PRIMARY, font=FONT_UI_SM,
+            command=self._manage_tools
+        ).pack(fill="x", padx=14, pady=(0, 4))
+
         # Tools count label
         self.tools_lbl = ctk.CTkLabel(
             parent, text="No tools loaded", font=FONT_UI_SM, text_color=TEXT_MUTED
@@ -560,11 +569,135 @@ class SupernaMCPApp(ctk.CTk):
         self.cfg["anthropic_api_key"] = self.anthropic_key_var.get()
         self.cfg["mcpServers"] = {
             "eyeglass-failover": {
-                "url": f"http://127.0.0.1:{self.cfg['mcp_port']}/sse"
+                "url": f"http://127.0.0.1:{self.cfg['mcp_port']}/mcp"
             }
         }
         save_config(self.cfg)
         self._append_chat("muted", "✓ Config saved to superna_mcp.json\n")
+
+    # ── Manage Tools (enable/disable) ───────────────────────────────────────────
+
+    def _load_tool_catalog(self) -> list | None:
+        """
+        Return the full tool catalog [{name, category, enabled}, ...].
+
+        Reads superna_tools_catalog.json next to server.py.  If it doesn't exist
+        yet, asks the server to generate it via `server.py --dump-catalog`.
+        """
+        server_path = Path(self.server_path_var.get().strip() or "server.py")
+        cat_path = server_path.parent / "superna_tools_catalog.json"
+
+        if not cat_path.exists():
+            py = _find_python()
+            if py and server_path.exists():
+                try:
+                    gui_log.info("GUI  generating tool catalog via --dump-catalog")
+                    subprocess.run([py, str(server_path), "--dump-catalog"],
+                                   cwd=str(server_path.parent), timeout=30,
+                                   capture_output=True)
+                except Exception as e:
+                    gui_log.warning("GUI  --dump-catalog failed: %s", e)
+
+        if cat_path.exists():
+            try:
+                data = json.load(open(cat_path))
+                # reflect the CURRENT disabled_tools from config over the catalog
+                disabled = set(self.cfg.get("disabled_tools") or [])
+                tools = data.get("tools", [])
+                for t in tools:
+                    t["enabled"] = t["name"] not in disabled
+                return tools
+            except Exception as e:
+                gui_log.error("GUI  read catalog failed: %s", e)
+        return None
+
+    def _manage_tools(self):
+        catalog = self._load_tool_catalog()
+        if not catalog:
+            self._append_chat(
+                "error_text",
+                "✗ Could not load the tool catalog. Set a valid server.py path and "
+                "install dependencies, then try again.\n"
+            )
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title("Manage Tools")
+        win.geometry("540x660")
+        win.configure(fg_color=DARK_BG)
+        win.transient(self)
+        win.after(100, win.grab_set)   # grab after the window is drawn
+
+        ctk.CTkLabel(
+            win, text="Enable / Disable Tools", font=FONT_TITLE, text_color=TEXT_PRIMARY
+        ).pack(anchor="w", padx=16, pady=(14, 2))
+        ctk.CTkLabel(
+            win, wraplength=500, justify="left", font=FONT_UI_SM, text_color=TEXT_MUTED,
+            text=("Disabled tools are not registered with the MCP server — the LLM "
+                  "cannot see or call them. Applying changes restarts the server.")
+        ).pack(anchor="w", padx=16, pady=(0, 8))
+
+        scroll = ctk.CTkScrollableFrame(win, fg_color=PANEL_BG)
+        scroll.pack(fill="both", expand=True, padx=12, pady=4)
+
+        from collections import OrderedDict
+        groups = OrderedDict()
+        for t in catalog:
+            groups.setdefault(t.get("category", "Other"), []).append(t)
+
+        self._tool_vars = {}
+        for cat, tools in groups.items():
+            hdr = ctk.CTkFrame(scroll, fg_color="transparent")
+            hdr.pack(fill="x", pady=(12, 2))
+            ctk.CTkLabel(
+                hdr, text=f"{cat}  ({len(tools)})", font=FONT_HEADING, text_color=ACCENT
+            ).pack(side="left", padx=(2, 0))
+            ctk.CTkButton(
+                hdr, text="None", width=48, height=22, fg_color=BORDER,
+                hover_color=ERROR, font=FONT_UI_SM,
+                command=lambda ts=tools: [self._tool_vars[t["name"]].set(False) for t in ts]
+            ).pack(side="right", padx=2)
+            ctk.CTkButton(
+                hdr, text="All", width=48, height=22, fg_color=BORDER,
+                hover_color=SUCCESS, font=FONT_UI_SM,
+                command=lambda ts=tools: [self._tool_vars[t["name"]].set(True) for t in ts]
+            ).pack(side="right", padx=2)
+
+            for t in tools:
+                var = ctk.BooleanVar(value=bool(t.get("enabled", True)))
+                self._tool_vars[t["name"]] = var
+                ctk.CTkCheckBox(
+                    scroll, text=t["name"], variable=var, font=FONT_UI_SM,
+                    text_color=TEXT_PRIMARY, checkbox_width=18, checkbox_height=18,
+                    fg_color=ACCENT, hover_color=ACCENT2
+                ).pack(anchor="w", padx=18, pady=1)
+
+        footer = ctk.CTkFrame(win, fg_color="transparent")
+        footer.pack(fill="x", padx=12, pady=10)
+        ctk.CTkButton(
+            footer, text="Apply & Restart", fg_color=ACCENT, hover_color=ACCENT2,
+            text_color="#04231d", font=FONT_UI,
+            command=lambda: self._apply_tool_selection(win)
+        ).pack(side="right")
+        ctk.CTkButton(
+            footer, text="Cancel", fg_color=BORDER, hover_color=ERROR,
+            text_color=TEXT_PRIMARY, font=FONT_UI, command=win.destroy
+        ).pack(side="right", padx=6)
+
+    def _apply_tool_selection(self, win):
+        disabled = sorted(name for name, var in self._tool_vars.items() if not var.get())
+        self.cfg["disabled_tools"] = disabled
+        self._save_config()
+        self._append_chat(
+            "muted",
+            f"✓ Tool selection saved — {len(self._tool_vars) - len(disabled)} enabled, "
+            f"{len(disabled)} disabled.\n"
+        )
+        win.destroy()
+        if self.server_running:
+            self._append_chat("muted", "⟳ Restarting server to apply tool changes...\n")
+            self._stop_server()
+            self.after(1000, self._start_server)
 
     def _browse_server(self):
         from tkinter import filedialog
@@ -651,7 +784,8 @@ class SupernaMCPApp(ctk.CTk):
 
         try:
             self.server_process = subprocess.Popen(
-                [python_exe, str(server_path), "--sse", "--port", str(port)],
+                # No transport flag → server defaults to streamable-http (/mcp).
+                [python_exe, str(server_path), "--port", str(port)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=str(server_path.parent)
             )
@@ -664,7 +798,7 @@ class SupernaMCPApp(ctk.CTk):
         threading.Thread(target=self._wait_for_server, args=(port,), daemon=True).start()
 
     def _wait_for_server(self, port: int):
-        sse_url = f"http://127.0.0.1:{port}/sse"
+        mcp_url = f"http://127.0.0.1:{port}/mcp"
         for _ in range(30):
             time.sleep(0.5)
             # Check if process already died — capture and show stderr
@@ -685,7 +819,10 @@ class SupernaMCPApp(ctk.CTk):
                 self.after(0, lambda m=msg: self._append_chat("error_text", m))
                 return
             try:
-                r = requests.get(f"http://127.0.0.1:{port}/sse", timeout=1, stream=True)
+                # A plain GET to /mcp returns an HTTP error status (the endpoint
+                # expects the MCP handshake), but any response means the server
+                # is listening — only a connection error keeps us waiting.
+                r = requests.get(f"http://127.0.0.1:{port}/mcp", timeout=1, stream=True)
                 r.close()
                 break
             except Exception:
@@ -697,7 +834,7 @@ class SupernaMCPApp(ctk.CTk):
         self.server_running = True
         self.after(0, self._on_server_started)
         # Load tools
-        threading.Thread(target=self._load_tools, args=(sse_url,), daemon=True).start()
+        threading.Thread(target=self._load_tools, args=(mcp_url,), daemon=True).start()
 
     def _on_server_started(self):
         self.status_dot.configure(text_color=SUCCESS)
@@ -732,14 +869,14 @@ class SupernaMCPApp(ctk.CTk):
         self.tools_lbl.configure(text="No tools loaded")
         self._append_chat("muted", "■ Server stopped\n")
 
-    def _load_tools(self, sse_url: str):
+    def _load_tools(self, mcp_url: str):
         import traceback as _tb
-        gui_log.info("GUI  _load_tools starting  url=%s", sse_url)
+        gui_log.info("GUI  _load_tools starting  url=%s", mcp_url)
         try:
             loop = asyncio.new_event_loop()
-            # 20-second timeout — prevents permanent hang if SSE response never arrives
+            # 20-second timeout — prevents permanent hang if the response never arrives
             tools = loop.run_until_complete(
-                asyncio.wait_for(get_mcp_tools(sse_url), timeout=20.0)
+                asyncio.wait_for(get_mcp_tools(mcp_url), timeout=20.0)
             )
             loop.close()
             self.mcp_tools = tools
@@ -839,7 +976,7 @@ class SupernaMCPApp(ctk.CTk):
 
     async def _openai_loop_async(self, prompt: str):
         port = int(self.port_var.get() or 8000)
-        sse_url = f"http://127.0.0.1:{port}/sse"
+        mcp_url = f"http://127.0.0.1:{port}/mcp"
         client = openai.OpenAI(api_key=self.openai_key_var.get().strip())
         model = self.model_var.get().strip() or "gpt-4o"
         tools_schema = mcp_tools_to_openai_schema(self.mcp_tools)
@@ -865,9 +1002,9 @@ class SupernaMCPApp(ctk.CTk):
         ]
         gui_log.info("LOOP START (openai)  prompt=%s", prompt[:200])
 
-        # One SSE session for the entire conversation — avoids reconnect
+        # One MCP session for the entire conversation — avoids reconnect
         # overhead between tool calls that caused the second-tool hang.
-        async with sse_client(sse_url) as (r, w):
+        async with streamablehttp_client(mcp_url) as (r, w, _):
             async with ClientSession(r, w) as session:
                 await session.initialize()
                 gui_log.info("LOOP (openai)  MCP session initialized")
@@ -943,7 +1080,7 @@ class SupernaMCPApp(ctk.CTk):
 
     async def _anthropic_loop_async(self, prompt: str):
         port = int(self.port_var.get() or 8000)
-        sse_url = f"http://127.0.0.1:{port}/sse"
+        mcp_url = f"http://127.0.0.1:{port}/mcp"
         client = anthropic_sdk.Anthropic(api_key=self.anthropic_key_var.get().strip())
         model = self.model_var.get().strip() or "claude-sonnet-4-20250514"
         tools_schema = mcp_tools_to_anthropic_schema(self.mcp_tools)
@@ -966,9 +1103,9 @@ class SupernaMCPApp(ctk.CTk):
         messages = [{"role": "user", "content": prompt}]
         gui_log.info("LOOP START (anthropic)  prompt=%s", prompt[:200])
 
-        # One SSE session for the entire conversation — avoids reconnect
+        # One MCP session for the entire conversation — avoids reconnect
         # overhead between tool calls that caused the second-tool hang.
-        async with sse_client(sse_url) as (r, w):
+        async with streamablehttp_client(mcp_url) as (r, w, _):
             async with ClientSession(r, w) as session:
                 await session.initialize()
                 gui_log.info("LOOP (anthropic)  MCP session initialized")

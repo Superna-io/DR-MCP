@@ -18,8 +18,8 @@ failover jobs, DR tests, rehearsals, and more.
 │  ┌──────────────────┐   MCP Protocol    ┌────────────────────────┐  │
 │  │                  │  (JSON-RPC 2.0)   │                        │  │
 │  │  Claude Desktop  │◄─────────────────►│  Eyeglass Failover     │  │
-│  │  (MCP Client)    │   SSE transport   │  MCP Server            │  │
-│  │                  │   port 8000       │  server.py             │  │
+│  │  (MCP Client)    │ streamable-HTTP   │  MCP Server            │  │
+│  │                  │   port 8000 /mcp  │  server.py             │  │
 │  └──────────────────┘                   └───────────┬────────────┘  │
 │                                                     │               │
 └─────────────────────────────────────────────────────┼───────────────┘
@@ -55,7 +55,7 @@ Claude Desktop                MCP Server (server.py)         Eyeglass REST API
       │  1. list_tools()              │                              │
       │──────────────────────────────►│                              │
       │◄──────────────────────────────│                              │
-      │  [34 tools returned]          │                              │
+      │  [56 tools returned]          │                              │
       │                               │                              │
       │  2. call_tool("list_nodes")   │                              │
       │──────────────────────────────►│                              │
@@ -70,10 +70,11 @@ Claude Desktop                MCP Server (server.py)         Eyeglass REST API
 
 ### Transport Modes
 
-| Mode | Usage | Port |
-|------|-------|------|
-| **SSE** (Server-Sent Events) | Standalone persistent service, Claude Desktop via URL | `8000` (configurable) |
-| **stdio** | Claude Desktop spawns the process directly | n/a |
+| Mode | Flag | Usage | Port / Endpoint |
+|------|------|-------|-----------------|
+| **streamable-HTTP** (default) | _(none)_ | Standalone persistent service, MCP clients via URL | `8000` `/mcp` (configurable) |
+| **SSE** (legacy) | `--sse` | Older MCP clients that only speak the SSE transport | `8000` `/sse` |
+| **stdio** | `--stdio` | Claude Desktop spawns the process directly | n/a |
 
 ---
 
@@ -95,7 +96,7 @@ python3 --version
 | From | To | Port | Protocol | Purpose |
 |------|----|------|----------|---------|
 | MCP Server host | Eyeglass appliance (`igls`) | 443 | HTTPS | REST API calls |
-| MCP Client (Claude Desktop) | MCP Server | 8000 | HTTP SSE | MCP protocol (SSE mode) |
+| MCP Client (Claude Desktop) | MCP Server | 8000 | streamable-HTTP | MCP protocol (default mode, `/mcp`) |
 | Claude Desktop | MCP Server | stdio | stdin/stdout | MCP protocol (stdio mode) |
 
 > **Note:** The Eyeglass appliance uses a self-signed TLS certificate by default.
@@ -169,16 +170,16 @@ The server is configured entirely through environment variables — no config fi
 
 ## Running the Server
 
-### Option A — SSE mode (recommended for persistent use)
+### Option A — streamable-HTTP mode (default, recommended for persistent use)
 
-SSE mode starts an HTTP server that MCP clients connect to over the network.
+Streamable-HTTP starts an HTTP server that MCP clients connect to over the network.
 
 ```bash
 export EYEGLASS_HOST=igls
 export EYEGLASS_API_TOKEN=igls-<your-token-here>
 export EYEGLASS_VERIFY_SSL=false
 
-python3 server.py --sse --port 8000
+python3 server.py --port 8000
 ```
 
 Expected output:
@@ -189,12 +190,19 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 ```
 
-The SSE endpoint is available at: `http://127.0.0.1:8000/sse`
+The MCP endpoint is available at: `http://127.0.0.1:8000/mcp`
+
+For older clients that only speak the legacy SSE transport, run
+`python3 server.py --sse --port 8000` instead (endpoint `http://127.0.0.1:8000/sse`).
 
 To expose it beyond localhost, change the server's `host` binding in `server.py`:
 ```python
 mcp.settings.host = "0.0.0.0"   # listen on all interfaces
 ```
+> ⚠ The server has **no MCP-client authentication** — it binds `127.0.0.1` by
+> design. Only bind `0.0.0.0` on a trusted network or behind an authenticating
+> reverse proxy. (The `igls-...` token authenticates the server *to Eyeglass*;
+> it does not protect the MCP endpoint.)
 
 ### Option B — stdio mode (Claude Desktop spawns it)
 
@@ -205,7 +213,7 @@ Do **not** start the server manually in this case — Claude Desktop handles it.
 
 ## Claude Desktop Integration
 
-### Option A — SSE (connect to running server)
+### Option A — streamable-HTTP (connect to running server)
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`
 (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
@@ -214,7 +222,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`
 {
   "mcpServers": {
     "eyeglass-failover": {
-      "url": "http://127.0.0.1:8000/sse"
+      "url": "http://127.0.0.1:8000/mcp"
     }
   }
 }
@@ -260,11 +268,12 @@ Expected: a JSON array of managed cluster nodes.
 
 ```python
 import asyncio, json
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
 
 async def test():
-    async with sse_client("http://127.0.0.1:8000/sse") as (r, w):
+    # streamablehttp_client yields a 3-tuple (read, write, get_session_id)
+    async with streamablehttp_client("http://127.0.0.1:8000/mcp") as (r, w, _):
         async with ClientSession(r, w) as session:
             await session.initialize()
             tools = await session.list_tools()
@@ -278,14 +287,21 @@ asyncio.run(test())
 
 Expected output:
 ```
-Connected — 34 tools available
+Connected — 56 tools available
 {'id': 'production_...', 'ip': '...', 'name': 'production'}
 {'id': 'DR_...',         'ip': '...', 'name': 'DR'}
 ```
 
 ---
 
-## Available Tools (34)
+## Available Tools (56)
+
+Tools fall into two categories — **DR Tools** (34) and **Data Security Tools** (22).
+Each can be individually enabled/disabled from the GUI **Manage Tools** panel;
+disabled tools are listed in `disabled_tools` in `superna_mcp.json` and are not
+registered with the server (the LLM cannot call them).
+
+## DR Tools (34)
 
 ### Health & Alarms
 | Tool | Description |
@@ -349,6 +365,50 @@ Connected — 34 tools available
 | `get_node_configrep_job` | Get a specific config rep job |
 | `update_node_configrep_job` | Enable/disable or change job type |
 
+## Data Security Tools (22)
+
+### Ransomware Defender
+| Tool | Description |
+|------|-------------|
+| `rsw_has_active_events` | Whether there are active ransomware events |
+| `list_critical_path_snapshots` | List critical-path snapshot jobs |
+| `snapshot_critical_paths` | Take a snapshot of all critical paths |
+| `get_critical_path_snapshot` | Get a snapshot job by ID |
+| `list_group_users` | List AD users in a group |
+| `lockout_user` | ⚠ Lock out a user (destructive — confirm required) |
+| `unlock_user` | ⚠ Unlock a user (confirm required) |
+
+### Security Events
+| Tool | Description |
+|------|-------------|
+| `list_security_events` | List security events (type: all/rsw/ea) |
+| `list_security_user_activity` | Security events by user (userinitiating + ticket required) |
+
+### Ransomware Whitelist
+| Tool | Description |
+|------|-------------|
+| `list_ransomware_whitelist` | Get all whitelist settings |
+| `list_ransomware_whitelist_changes` | Whitelist changed since a timestamp |
+
+### Airgap / Cyber Vault
+| Tool | Description |
+|------|-------------|
+| `list_ecs_airgap_jobs` | List ECS airgap jobs |
+| `update_ecs_airgap_status` | ⚠ Open/close air-gap route (destructive — confirm required) |
+| `list_ecssync_schedules` | ECS-sync schedules for a vault agent (evaID required) |
+| `get_invault_schedule` | In-vault schedule status |
+| `get_airgap_job_history` | Run history for an airgap job |
+| `list_airgap_jobs` | List airgap jobs for a vault agent (evaID required) |
+| `get_airgap_job` | Get a specific airgap job (id + jobname required) |
+| `start_airgap_job` | ⚠ Start an airgap job (confirm required) |
+| `list_airgap_access_requests` | Eyeglass access requests to the vault (evaID required) |
+
+### Users / Share Exposure
+| Tool | Description |
+|------|-------------|
+| `list_users` | List users (filter by uid/sid/upn/dlln) |
+| `list_user_smb_shares` | SMB shares accessible by a user |
+
 ---
 
 ## Troubleshooting
@@ -357,7 +417,7 @@ Connected — 34 tools available
 |---------|-------------|-----|
 | `403 Forbidden` on API calls | Invalid or missing API token | Check `EYEGLASS_API_TOKEN` |
 | `SSL: CERTIFICATE_VERIFY_FAILED` | Self-signed cert | Set `EYEGLASS_VERIFY_SSL=false` |
-| `Connection refused` on port 8000 | Server not started | Run `python3 server.py --sse --port 8000` |
+| `Connection refused` on port 8000 | Server not started | Run `python3 server.py --port 8000` |
 | Tools show in list but calls fail | Wrong node ID format | Use IDs from `list_nodes`, not names |
 | Failover blocked | `blockonwarnings=True` + warnings exist | Fix underlying SyncIQ issues first |
 | `ModuleNotFoundError: mcp` | Dependency not installed | Run `pip install mcp requests cryptography` |

@@ -8,7 +8,7 @@ Natural-language control of Superna Eyeglass DR failover operations via the Mode
 
 | File | Purpose |
 |------|---------|
-| `server.py` | MCP server — exposes 34 Eyeglass API tools |
+| `server.py` | MCP server — exposes 56 Eyeglass API tools (34 DR + 22 Data Security) |
 | `gui.py` | Windows GUI — chat interface with OpenAI or Anthropic LLM |
 | `superna_mcp.json` | Shared config file for both server and GUI |
 | `requirements-server.txt` | Server dependencies |
@@ -36,10 +36,10 @@ Edit `superna_mcp.json` and set your Eyeglass host and API token:
 }
 ```
 
-Start the server:
+Start the server (streamable-HTTP transport, endpoint `/mcp`):
 
 ```bash
-python server.py --sse --port 8000
+python server.py --port 8000
 ```
 
 ### Use with Claude Desktop
@@ -50,7 +50,7 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/App
 {
   "mcpServers": {
     "eyeglass-failover": {
-      "url": "http://127.0.0.1:8000/sse"
+      "url": "http://127.0.0.1:8000/mcp"
     }
   }
 }
@@ -74,8 +74,13 @@ The GUI auto-starts the MCP server, connects to your Eyeglass appliance, and run
 
 ---
 
-## Available MCP Tools (34)
+## Available MCP Tools (56)
 
+Tools are grouped into two categories. Each tool can be individually enabled or
+disabled from the GUI **Manage Tools** panel — disabled tools are not registered
+with the server, so the LLM can't call them.
+
+**DR Tools (34)**
 - Health check & alarms
 - Node / cluster management
 - SyncIQ policies, access zones, IP pools
@@ -83,6 +88,16 @@ The GUI auto-starts the MCP server, connects to your Eyeglass appliance, and run
 - DR test mode & rehearsal jobs
 - Readiness assessments
 - Configuration replication
+
+**Data Security Tools (22)**
+- Ransomware Defender — active events, critical-path snapshots, group users, lockout / unlock ⚠
+- Security events & user activity
+- Ransomware whitelist
+- Airgap / Cyber Vault — ECS jobs & schedules, in-vault status, job history, open/close air-gap route ⚠, plus airgap job ops (list/get/start ⚠/access requests)
+- User share exposure — users & their SMB shares
+
+> ⚠ Destructive tools (user lockout/unlock, air-gap route changes) require an explicit
+> "type yes to confirm" from the operator before the LLM will call them.
 
 ---
 
@@ -93,10 +108,11 @@ The GUI auto-starts the MCP server, connects to your Eyeglass appliance, and run
 | `eyeglass_host` | Hostname or IP of your Eyeglass appliance |
 | `eyeglass_api_token` | API token (`igls-...`) from Eyeglass Admin → API Tokens |
 | `eyeglass_verify_ssl` | `false` for self-signed certs (default) |
-| `mcp_port` | Port for the MCP SSE server (default: 8000) |
+| `mcp_port` | Port for the MCP streamable-HTTP server (default: 8000) |
 | `server_py_path` | Path to `server.py` (GUI uses this to auto-start the server) |
 | `openai_api_key` | Your OpenAI API key |
 | `anthropic_api_key` | Your Anthropic API key |
+| `disabled_tools` | List of tool names not to register (edited via the GUI **Manage Tools** panel) |
 
 ---
 

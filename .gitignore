@@ -6,3 +6,7 @@ build/
 *.spec
 .secrets
 CLAUDE.md
+
+# Generated at runtime by server.py
+superna_tools_catalog.json
+*.log

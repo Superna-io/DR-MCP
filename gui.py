@@ -322,6 +322,13 @@ class SupernaMCPApp(ctk.CTk):
         self.status_lbl = ctk.CTkLabel(topbar, text="Server stopped", font=FONT_UI_SM, text_color=TEXT_MUTED)
         self.status_lbl.pack(side="right", padx=(0, 4))
 
+        # Manage tools (enable/disable, grouped by category)
+        ctk.CTkButton(
+            topbar, text="🧩  Manage Tools", width=132, height=30,
+            fg_color=BORDER, hover_color=ACCENT2, text_color=TEXT_PRIMARY,
+            font=FONT_UI_SM, command=self._manage_tools
+        ).pack(side="right", padx=(0, 20))
+
         # ── Main split ──
         main = ctk.CTkFrame(self, fg_color=DARK_BG)
         main.pack(fill="both", expand=True, padx=0, pady=0)
@@ -464,13 +471,6 @@ class SupernaMCPApp(ctk.CTk):
             parent, text="💾  Save Config", fg_color=BORDER, hover_color=ACCENT2,
             text_color=TEXT_PRIMARY, font=FONT_UI_SM,
             command=self._save_config
-        ).pack(fill="x", padx=14, pady=(0, 4))
-
-        # Manage tools (enable/disable, grouped by category)
-        ctk.CTkButton(
-            parent, text="🧩  Manage Tools", fg_color=BORDER, hover_color=ACCENT2,
-            text_color=TEXT_PRIMARY, font=FONT_UI_SM,
-            command=self._manage_tools
         ).pack(fill="x", padx=14, pady=(0, 4))
 
         # Tools count label

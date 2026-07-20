@@ -456,7 +456,7 @@ class SupernaMCPApp(ctk.CTk):
         self.openai_key_entry.pack(fill="x", **pad)
 
         self._field_label(parent, "Model")
-        self.model_var = ctk.StringVar(value="claude-sonnet-4-20250514")
+        self.model_var = ctk.StringVar(value="claude-sonnet-5")
         self.model_entry = ctk.CTkEntry(
             parent, textvariable=self.model_var,
             fg_color=DARK_BG, border_color=BORDER, text_color=TEXT_PRIMARY,
@@ -710,7 +710,7 @@ class SupernaMCPApp(ctk.CTk):
 
     def _on_llm_change(self, value):
         model_defaults = {
-            "anthropic": "claude-sonnet-4-20250514",
+            "anthropic": "claude-sonnet-5",
             "openai": "gpt-4o"
         }
         self.model_var.set(model_defaults.get(value, ""))
@@ -1082,7 +1082,7 @@ class SupernaMCPApp(ctk.CTk):
         port = int(self.port_var.get() or 8000)
         mcp_url = f"http://127.0.0.1:{port}/mcp"
         client = anthropic_sdk.Anthropic(api_key=self.anthropic_key_var.get().strip())
-        model = self.model_var.get().strip() or "claude-sonnet-4-20250514"
+        model = self.model_var.get().strip() or "claude-sonnet-5"
         tools_schema = mcp_tools_to_anthropic_schema(self.mcp_tools)
         tools_used_total = 0
         first_call = True
